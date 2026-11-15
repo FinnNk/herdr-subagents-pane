@@ -41,6 +41,12 @@ subagent, so you can watch it work next to the main agent.
   doesn't mean the workflow is done. Idle panes read `· waiting` until then, so a
   driver/navigator pair stays visible for the whole loop. Any new activity cancels pending closes.
 - A pending permission or question keeps the pane open until it is answered.
+- **Status in herdr:** each viewer pane reports its subagent's state to herdr (`working`,
+  `blocked` while it needs input, `idle` otherwise; herdr shows an unseen idle as `done`), so
+  herdr's tab and sidebar indicators reflect subagents too, including in tabs you aren't looking at.
+- **Input alerts:** when a subagent starts waiting for a permission reply or an answer, a herdr
+  notification pops up (with herdr's "request" sound), whichever tab you're on and whether or
+  not the subagent has a pane. Answer it in the main session or in the subagent's expanded view.
 - Repeated titles are numbered (`Research: x`, `Research: x #2`) in labels, cards and the strip.
 - **Picks up a run in progress:** when the TUI starts, or switches to a session that already has
   subagents (e.g. after restarting opencode mid-run), running subagents get their panes at once,
@@ -88,6 +94,8 @@ Every key is optional; these are the defaults:
   "overflow": "evict",
   "overflowMaxPanes": 6,
   "summary": true,
+  "reportStatus": true,
+  "notifyInput": true,
   "debugLog": null,
   "excludeAgents": [],
   "excludeTitles": []
@@ -105,6 +113,8 @@ Every key is optional; these are the defaults:
 | `overflow` | `HERDR_SUBAGENTS_OVERFLOW` (`evict`/`tab`) | At the pane limit: close the oldest idle viewer (`evict`), or open extra viewers in an overflow tab (`tab`) |
 | `overflowMaxPanes` | `HERDR_SUBAGENTS_OVERFLOW_MAX_PANES` | Maximum viewers in the overflow tab |
 | `summary` | `HERDR_SUBAGENTS_SUMMARY` (`1`/`0`) | Show the summary strip |
+| `reportStatus` | `HERDR_SUBAGENTS_REPORT_STATUS` (`1`/`0`) | Report each viewer pane's agent state to herdr |
+| `notifyInput` | `HERDR_SUBAGENTS_NOTIFY_INPUT` (`1`/`0`) | Show a herdr notification when a subagent needs input |
 | `debugLog` | `HERDR_SUBAGENTS_DEBUG` | Path of a file to append debug logs to |
 | `excludeAgents` | | Agent names whose subagents get no pane, e.g. `["explore"]` |
 | `excludeTitles` | | Regular expressions (case-insensitive) for subagent titles that get no pane, e.g. `["^Quick:"]` |

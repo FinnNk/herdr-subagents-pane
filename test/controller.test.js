@@ -640,6 +640,47 @@ describe("rebalancing", () => {
   });
 });
 
+describe("herdr status and alerts", () => {
+  test("each viewer pane's status is reported when it changes (and again for a reopened pane)", async () => {
+    const reports = [];
+    const timers = fakeTimers();
+    const panes = { ...fakePanes(), report: async (paneId, status, title) => reports.push([paneId, status, title]) };
+    const c = createController({ panes, timers, settleMs: 0, closeDelayMs: 20_000 });
+    c.setRoute(ROOT);
+    c.handle("session.execution.started", { sessionID: ROOT });
+    c.handle("session.created", { sessionID: A, parentID: ROOT, title: "Driver: impl" });
+    c.handle("session.execution.started", { sessionID: A });
+    await c.idle();
+    c.handle("permission.asked", { sessionID: A, id: "p1" });
+    await c.idle();
+    c.handle("permission.replied", { sessionID: A, requestID: "p1" });
+    c.handle("session.execution.succeeded", { sessionID: A });
+    await c.idle();
+    expect(reports.map(([, st]) => st)).toEqual(["working", "needs input", "waiting"]);
+    expect(reports[0]).toEqual(["w1:p1", "working", "Driver: impl"]);
+    panes.userCloses("w1:p1");
+    c.handle("session.execution.started", { sessionID: A });
+    await c.idle();
+    expect(reports.at(-1)).toEqual(["w1:p2", "working (run 2)", "Driver: impl"]);
+  });
+
+  test("onNeedsInput fires once per wait, for panes and pane-less subagents alike", async () => {
+    const alerts = [];
+    const { c, ev, spawn } = setup({ exclude: () => true, onNeedsInput: (id, info) => alerts.push([id, info]) });
+    spawn(A, ROOT, "Echo: x");
+    ev("permission.asked", { sessionID: A, id: "p1", permission: "bash" });
+    ev("form.created", { form: { sessionID: A, id: "f1", title: "Which file?" } }); // already waiting: no second alert
+    ev("permission.replied", { sessionID: A, requestID: "p1" });
+    ev("form.replied", { sessionID: A, id: "f1" });
+    ev("form.created", { form: { sessionID: A, id: "f2", title: "Which file?" } });
+    await c.idle();
+    expect(alerts).toEqual([
+      [A, { title: "Echo: x", kind: "permission", detail: "bash" }],
+      [A, { title: "Echo: x", kind: "question", detail: "Which file?" }],
+    ]);
+  });
+});
+
 describe("open delay", () => {
   const D = 10_000;
 

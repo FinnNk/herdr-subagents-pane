@@ -40,6 +40,8 @@ describe("loadConfig", () => {
         overflow: "evict",
         overflowMaxPanes: 6,
         summary: true,
+        reportStatus: true,
+        notifyInput: true,
         debugLog: null,
         excludeAgents: [],
         excludeTitles: [],
