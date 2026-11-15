@@ -72,3 +72,51 @@ Keep all files inside this repo and don't commit. At the end, give me a short su
 - After the orchestrator's final review, all cards count down and close together.
 
 Runs take about two minutes and roughly 250k tokens in total.
+
+---
+
+## 2. Intercepted message: crack the cipher, then answer its question
+
+Shows a wide fan-out: three codebreakers race at once, stacked in one column; only one succeeds
+and the others go idle early. Then the decrypted message asks a question with a trap in it, and two
+solvers answer it independently for the orchestrator to compare. Quick: about a minute.
+
+### Setup
+
+No project needed, just an empty directory (the subagents may write small Python scripts):
+
+```sh
+mkdir -p ~/demo/cipher && cd ~/demo/cipher
+```
+
+### Prompt
+
+```text
+I intercepted this message and want to know what it asks, and the answer. Use subagent descriptions in the form 'Role: Task' exactly as given below.
+
+Aqmp uszf, cfy tbzv gdbgbip ulv qqtwrkq. Osn jas xyi dfec tgadci. M dpfgw usnid cicp djrxw aogv ef prv s'omsto, fxmti mu xns, moh js ao yg xa uavphf xzqqt ek xifpmi. Uu ecwa smeke prti mu imidz lrpr qejx fii ysgs. Lfa ybrp xunij hafw klq cicp djrx mz prv atppv hmz? Vvtxz azxt ulv rgnfvv moh ysi zsl kau mk.
+
+(1) CODEBREAKING - launch three general subagents at the same time, each testing one hypothesis: 'Caesar: codebreaking' (try all 26 shifts), 'Atbash: codebreaking' (try Atbash and simple reversal), and 'Vigenere: codebreaking' (find the key length with the index of coincidence, then the key by frequency analysis). Each may write and run a small Python script in this directory, must stop after one honest attempt, and reports either the key and plaintext or "no". No other file changes.
+
+(2) ANSWER - once you have the plaintext, launch two general subagents at the same time to answer its question independently: 'Formula: answer' (work it out by reasoning and arithmetic only, no code) and 'Simulation: answer' (write a short Python script that steps through the day minute by minute). Give each only the decrypted question.
+
+(3) VERDICT - compare the two answers yourself. If they disagree, find out why. Then give me the cipher and key, the decrypted message, the answer, and who did what.
+```
+
+### What to watch for
+
+- All three codebreakers open within seconds of each other and stack in one column (same task,
+  `codebreaking`). Caesar and Atbash report "no" quickly and go `idle` in the summary strip,
+  while Vigenère keeps working.
+- Formula and Simulation then open together. That makes five subagents, over the default limit
+  of four panes, so the oldest idle codebreaker (Caesar) is closed to make room.
+- The question has traps: counting 1 to 24 for the hours (300), or forgetting the half-hour
+  rings (156). Sometimes one solver gets it wrong and the orchestrator has to reconcile.
+- Known layout quirk: because the codebreaker column is already stacked, the solvers' column is
+  split off the top codebreaker's pane rather than getting the full height.
+
+### Answer (spoiler)
+
+Vigenère with key `EMBER`. The message describes a clock tower bell that rings the hour (1 to
+12) and once at every half past, and asks how many rings in a day:
+2 × (1 + … + 12) + 24 = **180**.
