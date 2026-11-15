@@ -3,8 +3,10 @@
 An [opencode](https://opencode.ai) v2 plugin that opens a [herdr](https://herdr.dev) pane for each
 subagent, so you can watch it work next to the main agent.
 
-- When the session in your opencode TUI spawns a subagent, a viewer pane opens running
-  `opencode --session <child>`. **Layout:** the orchestrator keeps the left third of its pane and
+- When the session in your opencode TUI spawns a subagent and it keeps working for 5 seconds, a
+  viewer pane opens for it, so quick subagents don't flash a pane open and shut (they still appear
+  in the summary strip). A subagent that asks for input gets its pane at once, and so does one
+  whose own subagent is working. Subagents can be excluded by agent name or title. **Layout:** the orchestrator keeps the left third of its pane and
   each task gets a column to the right. Name subagents `<Role>: <Task>` (the orchestrator chooses
   the description) and subagents with the same task share a column, e.g. `Driver: implementation`
   and `Navigator: implementation` stack in one column while `Research: word splitting` gets its own.
@@ -22,8 +24,9 @@ subagent, so you can watch it work next to the main agent.
 - **Summary strip:** a full-width strip along the bottom of the tab shows the agent tree, with an
   indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
   active time (ticking while it works), and tokens in / out (in includes cached prompt tokens, out
-  includes reasoning), plus a total. It opens with the first subagent and closes with the last
-  viewer. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
+  includes reasoning), plus a total. It opens as soon as the first subagent appears (even one too
+  quick to get a pane) and closes with the panes once the workflow has been quiet for the close
+  delay. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
   `· working (run 2)` each time it starts working again (resumed by its parent, or after
   its own subagents report back), `· waiting`, `· needs input`, or
@@ -35,10 +38,16 @@ subagent, so you can watch it work next to the main agent.
   doesn't mean the workflow is done. Idle panes read `· waiting` until then, so a
   driver/navigator pair stays visible for the whole loop. Any new activity cancels pending closes.
 - A pending permission or question keeps the pane open until it is answered.
+- Repeated titles are numbered (`Research: x`, `Research: x #2`) in labels, cards and the strip.
+- **Picks up a run in progress:** when the TUI starts, or switches to a session that already has
+  subagents (e.g. after restarting opencode mid-run), running subagents get their panes at once,
+  and every subagent appears in the strip with its tokens so far. Active time before the TUI
+  attached isn't known, so it counts from then.
 - At the pane limit, the oldest idle viewer is closed to make room for a new subagent. If every
   viewer is busy, the new subagent doesn't get a pane.
 - Panes are closed when the subagent session is deleted, when you switch the TUI to an unrelated
-  session, or when the TUI exits.
+  session, or when the TUI exits. Each pane also watches the TUI process that opened it and closes
+  itself if that process is gone, so a crash or a quick exit doesn't leave panes behind.
 
 Requires opencode ≥ 2.3 (client plugin API: `setup(api)`) running inside a herdr pane.
 
@@ -67,11 +76,14 @@ Every key is optional; these are the defaults:
 {
   "enabled": true,
   "autoClose": true,
+  "openDelaySeconds": 5,
   "closeDelaySeconds": 20,
   "settleSeconds": 3,
   "maxPanes": 4,
   "summary": true,
-  "debugLog": null
+  "debugLog": null,
+  "excludeAgents": [],
+  "excludeTitles": []
 }
 ```
 
@@ -79,11 +91,16 @@ Every key is optional; these are the defaults:
 | --- | --- | --- |
 | `enabled` | `HERDR_SUBAGENTS_ENABLED` (`1`/`0`) | Master switch. `false` turns the plugin off without uninstalling it |
 | `autoClose` | `HERDR_SUBAGENTS_AUTO_CLOSE` (`1`/`0`) | Close panes once the workflow is quiet. `false` keeps them open, labelled `done`, until you close them (the pane cap still applies) |
+| `openDelaySeconds` | `HERDR_SUBAGENTS_OPEN_DELAY_MS` (ms) | How long a subagent must keep working before its pane opens. `0` opens panes immediately |
 | `closeDelaySeconds` | `HERDR_SUBAGENTS_CLOSE_DELAY_MS` (ms) | Countdown before an idle subagent's pane closes |
 | `settleSeconds` | `HERDR_SUBAGENTS_SETTLE_MS` (ms) | How long the workflow must stay quiet before countdowns start |
 | `maxPanes` | `HERDR_SUBAGENTS_MAX_PANES` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
 | `summary` | `HERDR_SUBAGENTS_SUMMARY` (`1`/`0`) | Show the summary strip |
 | `debugLog` | `HERDR_SUBAGENTS_DEBUG` | Path of a file to append debug logs to |
+| `excludeAgents` | | Agent names whose subagents get no pane, e.g. `["explore"]` |
+| `excludeTitles` | | Regular expressions (case-insensitive) for subagent titles that get no pane, e.g. `["^Quick:"]` |
+
+Excluded subagents still appear in the summary strip, and still get a pane if they ask for input.
 
 Boolean variables also accept `true`/`false`, `yes`/`no` and `on`/`off`. Invalid values and
 unknown keys are ignored (the default is kept) and reported in a warning toast when opencode

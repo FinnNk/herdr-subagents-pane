@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { configPaths, loadConfig } from "../plugin/config.js";
+import { configPaths, loadConfig, makeExclude } from "../plugin/config.js";
 
 const HOME = "/home/u";
 const GLOBAL = "/home/u/.config/opencode/herdr-subagents-pane.json";
@@ -30,7 +30,18 @@ describe("configPaths", () => {
 describe("loadConfig", () => {
   test("defaults when there is no file", () => {
     expect(load()).toEqual({
-      config: { enabled: true, autoClose: true, closeDelayMs: 20_000, settleMs: 3_000, maxPanes: 4, summary: true, debugLog: null },
+      config: {
+        enabled: true,
+        autoClose: true,
+        openDelayMs: 5_000,
+        closeDelayMs: 20_000,
+        settleMs: 3_000,
+        maxPanes: 4,
+        summary: true,
+        debugLog: null,
+        excludeAgents: [],
+        excludeTitles: [],
+      },
       source: null,
       warnings: [],
     });
@@ -88,5 +99,29 @@ describe("loadConfig", () => {
     const r = load({}, { HERDR_SUBAGENTS_MAX_PANES: "lots" });
     expect(r.config.maxPanes).toBe(4);
     expect(r.warnings).toEqual(["HERDR_SUBAGENTS_MAX_PANES=lots: should be a whole number, 1 or more; ignored"]);
+  });
+
+  test("open delay and exclusion lists, with invalid regexes rejected", () => {
+    const r = load(
+      { [GLOBAL]: JSON.stringify({ openDelaySeconds: 0, excludeAgents: ["explore"], excludeTitles: ["^Echo:", "("] }) },
+      { HERDR_SUBAGENTS_OPEN_DELAY_MS: "2500" },
+    );
+    expect(r.config).toMatchObject({ openDelayMs: 2_500, excludeAgents: ["explore"], excludeTitles: [] });
+    expect(r.warnings).toEqual([`${GLOBAL}: "excludeTitles" should be a list of valid regular expressions; using []`]);
+  });
+});
+
+describe("makeExclude", () => {
+  test("matches titles by regex (case-insensitive) and agents by name", () => {
+    const agents = { ses_a: "Explore", ses_b: "general" };
+    const exclude = makeExclude({ excludeAgents: ["explore"], excludeTitles: ["^echo:"] }, (id) => agents[id]);
+    expect(exclude({ id: "ses_a", title: "Research: x" })).toBe(true); // agent
+    expect(exclude({ id: "ses_b", title: "Echo: test" })).toBe(true); // title
+    expect(exclude({ id: "ses_b", title: "Research: x" })).toBe(false);
+    expect(exclude({ id: "ses_unknown" })).toBe(false); // agent not known yet
+  });
+
+  test("no lists means nothing is excluded", () => {
+    expect(makeExclude({})({ id: "x", title: "anything" })).toBe(false);
   });
 });
