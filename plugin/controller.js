@@ -103,6 +103,7 @@ export function createController({
   let settleTimer; // pending "tree has been quiet for settleMs"
   let settled = false; // tree quiet and settle period elapsed
   let stripOpen = false;
+  let paused = false; // panes paused by the user: tracking continues, nothing is shown
   let stripTimer; // pending strip close
 
   /** Serialize all pane operations so splits/closes never race each other. */
@@ -154,6 +155,7 @@ export function createController({
         openTimer: undefined, // pending delayed open
         shownLabel: undefined,
         reported: undefined, // status last reported to herdr for the current pane
+        forced: false, // opened on request (strip / action): ignores exclusion and pause
       };
       children.set(id, c);
       openStrip();
@@ -339,6 +341,7 @@ export function createController({
     const paneId = c.paneId;
     c.paneId = undefined;
     c.shownLabel = undefined;
+    c.forced = false;
     await panes.close(paneId);
     log("closed viewer", { child: c.id, pane: paneId, why });
     requestRebalance();
@@ -352,7 +355,8 @@ export function createController({
       if (disposed || !children.has(c.id)) return;
       if (c.paneId && (await panes.exists(c.paneId))) return;
       c.paneId = undefined;
-      if (c.blockers.size === 0 && isExcluded(c)) return;
+      if (paused && !c.forced) return;
+      if (c.blockers.size === 0 && !c.forced && isExcluded(c)) return;
       let area = "main";
       if (openPanes("main").length >= maxPanes) {
         if (overflow === "tab" && openPanes("overflow").length < overflowMaxPanes) area = "overflow";
@@ -424,6 +428,7 @@ export function createController({
    */
   function requestOpen(c) {
     cancelClose(c);
+    if (paused) return;
     if (c.paneId || openDelayMs <= 0) return ensureOpen(c);
     if (c.openTimer !== undefined) return;
     c.openTimer = timers.setTimeout(() => {
@@ -473,7 +478,7 @@ export function createController({
 
   function openStrip() {
     cancelStripClose();
-    if (!strip || stripOpen) return;
+    if (!strip || stripOpen || paused) return;
     stripOpen = true;
     enqueue(async () => {
       await strip.open();
@@ -681,6 +686,49 @@ export function createController({
     /** Parent session of `id` (from events, falling back to the lookup). */
     parentOf(id) {
       return parentOf(id);
+    },
+
+    /**
+     * Open a subagent's pane now (e.g. picked in the strip), even if it is
+     * excluded, finished, or panes are paused. Resolves to its pane id.
+     */
+    async forceOpen(id) {
+      const c = children.get(id);
+      if (!c || disposed) return undefined;
+      c.forced = true;
+      openStrip();
+      ensureOpen(c);
+      await this.idle();
+      return c.paneId;
+    },
+
+    /** The pane showing a subagent, and which tab area it is in. */
+    paneOf(id) {
+      const c = children.get(id);
+      return c?.paneId ? { paneId: c.paneId, area: c.area ?? "main" } : undefined;
+    },
+
+    get paused() {
+      return paused;
+    },
+
+    /** Pause (close every pane, open none) or resume (reopen panes for busy subagents). */
+    setPaused(next) {
+      if (disposed || next === paused) return;
+      paused = next;
+      log(paused ? "panes paused" : "panes resumed");
+      if (paused) {
+        for (const c of children.values()) {
+          cancelOpen(c);
+          cancelClose(c);
+          enqueue(() => closePane(c, "paused"));
+        }
+        closeStrip("paused");
+        return;
+      }
+      if (children.size) openStrip();
+      for (const c of children.values()) if (busy(c) || busyBelow(c.id)) ensureOpen(c);
+      reevaluate();
     },
 
     /** Display title of a tracked subagent ("#2" for repeated titles), if known. */

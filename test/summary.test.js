@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSummaryStore, formatCost, formatDuration, formatTokens, renderSummary, timelineBar, treeRows } from "../plugin/summary.js";
+import { createSummaryStore, formatCost, formatDuration, formatTokens, moveSelection, renderSummary, selectable, STRIP_HINT, timelineBar, treeRows } from "../plugin/summary.js";
 import { summaryCommand } from "../plugin/tui.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
@@ -132,6 +132,24 @@ describe("renderSummary", () => {
     expect(lines.at(-1)).toMatch(/\$0\.43$/); // total
     // Very narrow: the model column goes first.
     expect(renderSummary(store.snapshot(), { cols: 60, rows: 10, now: 0 }).map(strip)[0]).not.toContain("model");
+  });
+
+  test("strip selection: subagents only, arrows move and stop at the ends, selected row in reverse", () => {
+    const { store, ev } = setup();
+    ev("session.created", { sessionID: RES, parentID: ROOT, title: "Research: x" });
+    ev("session.created", { sessionID: NAV, parentID: ROOT, title: "Navigator: y" });
+    ev("session.created", { sessionID: DRV, parentID: NAV, title: "Driver: y" });
+    const snap = store.snapshot();
+    const ids = selectable(snap);
+    expect(ids).toEqual([RES, NAV, DRV]);
+    expect(moveSelection(ids, undefined, "down")).toBe(RES);
+    expect(moveSelection(ids, undefined, "up")).toBe(DRV);
+    expect(moveSelection(ids, DRV, "down")).toBe(DRV);
+    expect(moveSelection(ids, NAV, "up")).toBe(RES);
+    const lines = renderSummary(snap, { cols: 120, rows: 10, now: 0, selected: NAV });
+    expect(lines[3].startsWith("\x1b[7m")).toBe(true);
+    expect(lines[2].startsWith("\x1b[7m")).toBe(false);
+    expect(strip(lines.at(-1))).toContain(STRIP_HINT);
   });
 
   test("timelineBar marks active slots, idle after the first run, blank before", () => {

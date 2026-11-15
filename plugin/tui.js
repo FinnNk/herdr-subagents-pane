@@ -13,9 +13,11 @@ import { loadConfig, makeExclude } from "./config.js";
 import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 import { createSummaryStore } from "./summary.js";
+import { runtimeRoot, sweepStale, takeCommands } from "./control.js";
 
 const VIEWER_ENV = "HERDR_SUBAGENTS_PANE_VIEWER";
 const ROUTE_POLL_MS = 500;
+const COMMAND_POLL_MS = 300;
 const CARD_SCRIPT = fileURLToPath(new URL("./card.js", import.meta.url));
 const SUMMARY_SCRIPT = fileURLToPath(new URL("./summary.js", import.meta.url));
 /** Share of its height the orchestrator pane keeps when the summary strip opens below it. */
@@ -95,6 +97,10 @@ function setup(api) {
   if (process.env.OPENCODE_SERVER_PASSWORD) env.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD;
 
   // Card state lives in a private runtime dir, one JSON file per subagent.
+  // Dirs left behind by TUIs that exited before cleaning up are removed first.
+  try {
+    sweepStale(runtimeRoot());
+  } catch {}
   const cardDir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "herdr-subagents-pane", String(process.pid));
   fs.mkdirSync(cardDir, { recursive: true, mode: 0o700 });
   const stateFile = (id) => path.join(cardDir, `${id}.json`);
@@ -252,6 +258,48 @@ function setup(api) {
     if (controller.root !== adoptedRoot) adoptExisting();
   }
 
+  // Control channel (see control.js): instance.json tells senders where this
+  // TUI is; the strip and herdr actions drop commands into cardDir/commands.
+  const startedAt = Date.now();
+  const writeInstance = async () => {
+    const tab = await herdrPanes.tabOf(process.env.HERDR_PANE_ID);
+    writeJson(path.join(cardDir, "instance.json"), { pid: process.pid, pane: process.env.HERDR_PANE_ID, tab, startedAt });
+  };
+  writeInstance().catch((err) => log("instance.json failed", { err: String(err) }));
+  const toast = (message, variant = "info") => {
+    try {
+      api.ui?.toast?.show({ variant, title: "Subagent panes", message });
+    } catch {}
+  };
+  async function runCommand({ cmd, session }) {
+    log("command", { cmd, session });
+    if (cmd === "toggle") {
+      controller.setPaused(!controller.paused);
+      toast(controller.paused ? "Paused: panes closed; the plugin keeps tracking subagents." : "Resumed.");
+    } else if (cmd === "focus-strip") {
+      if (stripPane) await herdrPanes.focusNeighbour(process.env.HERDR_PANE_ID, "down");
+      else toast("There is no agents strip open right now.");
+    } else if (cmd === "open" || cmd === "expand") {
+      if (!controller.isTracked(session)) return;
+      const paneId = await controller.forceOpen(session);
+      if (!paneId) return toast("Couldn't open a pane for that subagent (all panes are busy).", "warning");
+      if (cmd === "expand") await herdrPanes.zoom(paneId);
+    }
+  }
+  let commandBusy = false;
+  const commandPoll = setInterval(async () => {
+    if (commandBusy) return;
+    const cmds = takeCommands(cardDir);
+    if (!cmds.length) return;
+    commandBusy = true;
+    try {
+      for (const c of cmds) await runCommand(c).catch((err) => log("command failed", { cmd: c.cmd, err: String(err) }));
+    } finally {
+      commandBusy = false;
+    }
+  }, COMMAND_POLL_MS);
+  commandPoll.unref?.();
+
   const unsubscribe = api.data.listen(({ details }) => {
     if (!details?.type) return;
     syncRoute(); // route can change without an event of its own
@@ -269,6 +317,7 @@ function setup(api) {
 
   return () => {
     clearInterval(poll);
+    clearInterval(commandPoll);
     unsubscribe();
     controller.dispose().finally(() => {
       cards.dispose();

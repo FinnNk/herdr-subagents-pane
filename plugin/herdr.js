@@ -164,6 +164,22 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
       args.push("--state", herdrState(status), "--message", `${title} · ${status}`, "--seq", String(++reportSeq));
       await herdr(args).catch((err) => log("report-agent failed", { err: String(err) }));
     },
+    /** Tab a pane is in. */
+    async tabOf(paneId) {
+      return (await herdr(["pane", "get", paneId]).catch(() => undefined))?.result?.pane?.tab_id;
+    },
+    /** Bring a pane to the front: focus its tab, then zoom it (the card expands when zoomed). */
+    async zoom(paneId) {
+      const tab = await this.tabOf(paneId);
+      if (tab) await herdr(["tab", "focus", tab]).catch(() => {});
+      await herdr(["pane", "zoom", paneId, "--on"]);
+    },
+    /** Focus the pane next to `paneId` in `direction` (herdr can't focus a pane by id). */
+    async focusNeighbour(paneId, direction) {
+      const tab = await this.tabOf(paneId);
+      if (tab) await herdr(["tab", "focus", tab]).catch(() => {});
+      await herdr(["pane", "focus", "--pane", paneId, "--direction", direction]);
+    },
     /** A herdr notification (shown whichever tab is focused). */
     async notify(title, body, sound = "request") {
       const args = ["notification", "show", title, "--sound", sound];

@@ -31,7 +31,11 @@ subagent, so you can watch it work next to the main agent.
   non-zero cost; subscription and local providers report none), plus a total. The rest of the
   width is a **timeline**: one bar per agent across the run so far, `█` while it was working and
   `·` while idle, so parallel and sequential work is visible at a glance. On a narrow strip the
-  timeline goes first, then the model column. It opens as soon as the first subagent appears (even one too
+  timeline goes first, then the model column.
+  **Keyboard:** focus the strip (click it, or the herdr action below), then `↑`/`↓` (or `k`/`j`)
+  select a subagent, `Enter` expands it into its full view, and `o` just opens its pane. This works
+  for any subagent in the tree, including ones whose pane has closed or that never got one; `Esc`
+  clears the selection. The strip doesn't capture the mouse. It opens as soon as the first subagent appears (even one too
   quick to get a pane) and closes with the panes once the workflow has been quiet for the close
   delay. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
@@ -75,6 +79,20 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
   "plugins": ["/path/to/herdr-subagents-pane/plugin"]
 }
 ```
+
+## herdr actions (optional)
+
+The repository is also a herdr plugin with two actions you can run from herdr's action menu or
+bind to keys. They act on the opencode TUI in the focused tab:
+
+- **Toggle subagent panes**: pause (close all subagent panes and the strip, and open none) or
+  resume. The plugin keeps tracking subagents while paused, so resuming brings back panes for
+  the ones still working.
+- **Focus agents strip**: move focus to the strip, ready for its keyboard controls.
+
+Install it with `herdr plugin link /path/to/herdr-subagents-pane` (or `herdr plugin install` from
+GitHub). The actions need `node` on PATH, or `opencode` (whose embedded Bun is used instead).
+Other tools can send the same commands with `node plugin/ctl.js toggle|focus-strip|expand <session>|open <session>`.
 
 ## Configuration
 
@@ -167,6 +185,8 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/layout.js`: works out the resizes that even out column widths and card heights (pure).
 - `plugin/config.js`: settings from the config file and environment (pure).
 - `plugin/watchdog.js`: closes a viewer pane if the TUI that opened it is gone.
+- `plugin/control.js`, `plugin/ctl.js`: the control channel (a commands folder in the runtime dir)
+  used by the strip's keys and the herdr actions in `herdr-plugin.toml`.
 
 Viewer panes are started with `HERDR_SUBAGENTS_PANE_VIEWER=1` so the plugin does not run inside them.
 If the parent TUI uses `--server <url>`, the viewer uses the same URL, and `OPENCODE_SERVER_PASSWORD`

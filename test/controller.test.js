@@ -681,6 +681,46 @@ describe("herdr status and alerts", () => {
   });
 });
 
+describe("pause and force-open", () => {
+  test("forceOpen opens an excluded or finished subagent's pane and returns its id", async () => {
+    const { c, panes, spawn, start, stop } = setup({ exclude: () => true });
+    spawn(A, ROOT, "Echo: x");
+    start(A);
+    stop(A);
+    await c.idle();
+    expect(panes.opens()).toEqual([]);
+    expect(await c.forceOpen(A)).toBe("w1:p1");
+    expect(c.paneOf(A)).toEqual({ paneId: "w1:p1", area: "main" });
+    expect(await c.forceOpen("ses_unknown")).toBeUndefined();
+  });
+
+  test("pausing closes panes and the strip and opens nothing; resuming reopens busy subagents", async () => {
+    const events = [];
+    const strip = { open: async () => events.push("open"), close: async () => events.push("close") };
+    const { c, panes, spawn, start, stop } = setup({ strip });
+    start(ROOT);
+    spawn(A, ROOT, "Research: a");
+    spawn(B, ROOT, "Docs: b");
+    start(A);
+    start(B);
+    await c.idle();
+    c.setPaused(true);
+    await c.idle();
+    expect(panes.open_.size).toBe(0);
+    expect(events).toEqual(["open", "close"]);
+    spawn("ses_c", ROOT, "Tests: c");
+    start("ses_c");
+    stop(B);
+    await c.idle();
+    expect(panes.open_.size).toBe(0);
+    c.setPaused(false);
+    await c.idle();
+    expect(events).toEqual(["open", "close", "open"]);
+    expect([...panes.open_.values()].map((l) => l.split(" · ")[0]).sort()).toEqual(["Research: a", "Tests: c"]); // B is idle
+    expect(c.isTracked("ses_c")).toBe(true);
+  });
+});
+
 describe("open delay", () => {
   const D = 10_000;
 
