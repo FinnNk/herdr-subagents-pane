@@ -1,0 +1,9 @@
+{
+  "name": "herdr-subagents-pane",
+  "version": "0.1.0",
+  "description": "opencode v2 plugin: open a herdr pane for each subagent",
+  "type": "module",
+  "scripts": {
+    "test": "BUN_BE_BUN=1 opencode test"
+  }
+}
