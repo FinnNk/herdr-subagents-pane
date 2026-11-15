@@ -149,7 +149,8 @@ function setup(api) {
         },
       }
     : undefined;
-  const panes = herdrPanes;
+  // Without status reporting, leave herdr's own idea of the viewer panes alone.
+  const panes = config.reportStatus ? herdrPanes : { ...herdrPanes, report: undefined };
 
   controller = createController({
     panes,
@@ -157,6 +158,13 @@ function setup(api) {
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
     onStatus: (id, info) => cards.status(id, info),
+    onNeedsInput(id, { title, kind, detail }) {
+      if (!config.notifyInput) return;
+      const what = kind === "permission" ? "a permission reply" : "an answer";
+      const where = api.data.session.get(controller.root)?.title;
+      const body = [detail, where && `in ${where}`].filter(Boolean).join(" · ");
+      herdrPanes.notify(`${title} is waiting for ${what}`, body);
+    },
     isPinned: (id) => fs.existsSync(`${stateFile(id)}.expanded`),
     autoClose: config.autoClose,
     openDelayMs: config.openDelayMs,

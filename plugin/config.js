@@ -23,6 +23,8 @@ export const DEFAULTS = Object.freeze({
   overflow: "evict",
   overflowMaxPanes: 6,
   summary: true,
+  reportStatus: true,
+  notifyInput: true,
   debugLog: null,
   excludeAgents: [],
   excludeTitles: [],
@@ -45,6 +47,8 @@ const FILE_KEYS = {
   overflow: [(v) => v === "evict" || v === "tab", '"evict" or "tab"'],
   overflowMaxPanes: [isPaneCount, "a whole number, 1 or more"],
   summary: [isBool, "true or false"],
+  reportStatus: [isBool, "true or false"],
+  notifyInput: [isBool, "true or false"],
   debugLog: [isPathOrNull, "a file path or null"],
   excludeAgents: [isNameList, "a list of agent names"],
   excludeTitles: [isRegexList, "a list of valid regular expressions"],
@@ -79,6 +83,8 @@ const ENV_KEYS = {
   HERDR_SUBAGENTS_OVERFLOW: ["overflow", (raw) => (["evict", "tab"].includes(raw.trim()) ? raw.trim() : undefined), "evict or tab"],
   HERDR_SUBAGENTS_OVERFLOW_MAX_PANES: ["overflowMaxPanes", parseCount, "a whole number, 1 or more"],
   HERDR_SUBAGENTS_SUMMARY: ["summary", parseBool, "1 or 0"],
+  HERDR_SUBAGENTS_REPORT_STATUS: ["reportStatus", parseBool, "1 or 0"],
+  HERDR_SUBAGENTS_NOTIFY_INPUT: ["notifyInput", parseBool, "1 or 0"],
   HERDR_SUBAGENTS_DEBUG: ["debugLog", (raw) => raw || undefined, "a file path"],
 };
 
@@ -96,7 +102,7 @@ export function configPaths(env = process.env, home = os.homedir()) {
  * Resolve settings. Invalid values are ignored (the default or file value is
  * kept) and reported in `warnings`; nothing here throws.
  * @returns {{ config: { enabled: boolean, autoClose: boolean, openDelayMs: number, closeDelayMs: number,
- *   settleMs: number, maxPanes: number, overflow: "evict"|"tab", overflowMaxPanes: number, summary: boolean, debugLog: string|null,
+ *   settleMs: number, maxPanes: number, overflow: "evict"|"tab", overflowMaxPanes: number, summary: boolean, reportStatus: boolean, notifyInput: boolean, debugLog: string|null,
  *   excludeAgents: string[], excludeTitles: string[] },
  *   source: string|null, warnings: string[] }}
  */
@@ -159,6 +165,8 @@ export function loadConfig({ env = process.env, home = os.homedir(), readFile = 
       overflow: values.overflow,
       overflowMaxPanes: values.overflowMaxPanes,
       summary: values.summary,
+      reportStatus: values.reportStatus,
+      notifyInput: values.notifyInput,
       debugLog: values.debugLog,
       excludeAgents: [...values.excludeAgents],
       excludeTitles: [...values.excludeTitles],

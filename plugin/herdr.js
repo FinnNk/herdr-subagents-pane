@@ -22,6 +22,13 @@ function herdr(args) {
 }
 
 /** POSIX single-quote a value for a shell command line. */
+/** herdr agent state for a card status. */
+export function herdrState(status) {
+  if (/^needs input/.test(status)) return "blocked";
+  if (/^(working|starting)/.test(status)) return "working";
+  return "idle"; // waiting, done, closing
+}
+
 export function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -41,6 +48,7 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
   // may have added panes of their own to it.
   let overflowTab;
   const overflowPanes = new Set();
+  let reportSeq = 0;
 
   async function openInNewTab(childId, label) {
     // The overflow tab goes in the TUI's workspace, not whichever one is active.
@@ -149,6 +157,21 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
     },
     async rename(paneId, label) {
       await herdr(["pane", "rename", paneId, label]).catch(() => {});
+    },
+    /** Tell herdr the viewer pane's agent state, so its tab and sidebar indicators show it. */
+    async report(paneId, status, title) {
+      const args = ["pane", "report-agent", paneId, "--source", "herdr-subagents-pane", "--agent", "opencode"];
+      args.push("--state", herdrState(status), "--message", `${title} · ${status}`, "--seq", String(++reportSeq));
+      await herdr(args).catch((err) => log("report-agent failed", { err: String(err) }));
+    },
+    /** A herdr notification (shown whichever tab is focused). */
+    async notify(title, body, sound = "request") {
+      const args = ["notification", "show", title, "--sound", sound];
+      if (body) args.push("--body", body);
+      await herdr(args).then(
+        () => log("notification shown", { title }),
+        (err) => log("notification failed", { err: String(err) }),
+      );
     },
   };
 }

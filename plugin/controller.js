@@ -68,6 +68,8 @@ const STOP_EVENTS = new Set([
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
  * @param {(id: string, info: {title?: string, status: string, rounds: number}) => void} [opts.onStatus]
  *        called whenever a subagent's status may have changed (e.g. to update a card)
+ * @param {(id: string, info: {title: string, kind: "permission"|"question", detail?: string}) => void} [opts.onNeedsInput]
+ *        called when a subagent starts waiting for input (not again until it has none pending)
  * @param {(id: string) => boolean} [opts.isPinned] true while the user has a subagent's view
  *        expanded; its pane is never auto-closed, the countdown just restarts
  * @param {(msg: string, extra?: object) => void} [opts.log]
@@ -78,6 +80,7 @@ export function createController({
   lookupParent = () => undefined,
   lookupRunning = () => undefined,
   onStatus = () => {},
+  onNeedsInput = () => {},
   isPinned = () => false,
   autoClose = true,
   openDelayMs = DEFAULT_OPEN_DELAY_MS,
@@ -150,6 +153,7 @@ export function createController({
         closeTimer: undefined,
         openTimer: undefined, // pending delayed open
         shownLabel: undefined,
+        reported: undefined, // status last reported to herdr for the current pane
       };
       children.set(id, c);
       openStrip();
@@ -225,13 +229,19 @@ export function createController({
     } catch (err) {
       log("onStatus failed", { err: String(err) });
     }
-    if (!panes.rename) return;
+    if (!panes.rename && !panes.report) return;
     enqueue(async () => {
       if (!c.paneId) return;
       const next = label(c);
-      if (next === c.shownLabel) return;
-      c.shownLabel = next;
-      await panes.rename(c.paneId, next);
+      if (panes.rename && next !== c.shownLabel) {
+        c.shownLabel = next;
+        await panes.rename(c.paneId, next);
+      }
+      const st = status(c);
+      if (panes.report && st !== c.reported) {
+        c.reported = st;
+        await panes.report(c.paneId, st, displayTitle(c));
+      }
     });
   }
 
@@ -368,6 +378,7 @@ export function createController({
       c.column = key;
       c.shownLabel = label(c);
       c.paneId = await panes.open(c.id, anchor, c.shownLabel);
+      c.reported = undefined;
       c.openedSeq = ++openSeq;
       log("opened viewer", { child: c.id, pane: c.paneId, anchor });
       // Put the collapsed panes back under the column's top pane, in their order.
@@ -375,7 +386,9 @@ export function createController({
       for (const m of restack) {
         m.shownLabel = label(m);
         m.paneId = below ? await panes.open(m.id, { paneId: below, direction: "down" }, m.shownLabel) : undefined;
+        m.reported = undefined;
         if (m.paneId) below = m.paneId;
+        refreshLabel(m);
         if (m.closeTimer !== undefined && !m.paneId) cancelClose(m);
       }
       if (restack.length) log("restacked column", { panes: restack.map((m) => m.paneId) });
@@ -384,6 +397,15 @@ export function createController({
       if (c.paneId && settled && closable(c)) scheduleClose(c);
     });
     refreshLabel(c);
+  }
+
+  function needsInput(c, kind, data) {
+    const detail = [data?.title, data?.permission, data?.message].find((v) => typeof v === "string" && v.trim());
+    try {
+      onNeedsInput(c.id, { title: displayTitle(c), kind, detail });
+    } catch (err) {
+      log("onNeedsInput failed", { err: String(err) });
+    }
   }
 
   function isExcluded(c) {
@@ -605,12 +627,16 @@ export function createController({
           if (!isRunning(p)) requestOpen(pc);
         }
       } else if (type === "permission.asked") {
+        const was = c.blockers.size;
         c.blockers.add(`permission:${data.id}`);
+        if (was === 0) needsInput(c, "permission", data);
         ensureOpen(c);
       } else if (type === "permission.replied") {
         c.blockers.delete(`permission:${data.requestID}`);
       } else if (type === "form.created") {
+        const was = c.blockers.size;
         c.blockers.add(`form:${data.form?.id}`);
+        if (was === 0) needsInput(c, "question", data.form);
         ensureOpen(c);
       } else if (type === "form.replied" || type === "form.cancelled") {
         c.blockers.delete(`form:${data.id}`);
