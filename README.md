@@ -26,8 +26,12 @@ subagent, so you can watch it work next to the main agent.
   you collapse it.
 - **Summary strip:** a full-width strip along the bottom of the tab shows the agent tree, with an
   indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
-  active time (ticking while it works), and tokens in / out (in includes cached prompt tokens, out
-  includes reasoning), plus a total. It opens as soon as the first subagent appears (even one too
+  active time (ticking while it works), tokens in / out (in includes cached prompt tokens, out
+  includes reasoning), its model, its cost (a column that appears only when some agent has a
+  non-zero cost; subscription and local providers report none), plus a total. The rest of the
+  width is a **timeline**: one bar per agent across the run so far, `█` while it was working and
+  `·` while idle, so parallel and sequential work is visible at a glance. On a narrow strip the
+  timeline goes first, then the model column. It opens as soon as the first subagent appears (even one too
   quick to get a pane) and closes with the panes once the workflow has been quiet for the close
   delay. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,

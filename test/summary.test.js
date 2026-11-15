@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSummaryStore, formatDuration, formatTokens, renderSummary, treeRows } from "../plugin/summary.js";
+import { createSummaryStore, formatCost, formatDuration, formatTokens, renderSummary, timelineBar, treeRows } from "../plugin/summary.js";
 import { summaryCommand } from "../plugin/tui.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
@@ -99,13 +99,47 @@ describe("renderSummary", () => {
     ev("session.step.ended", { sessionID: RES, tokens: { input: 8100, output: 600 } });
     ev("session.execution.started", { sessionID: DRV });
     tick(31_000);
-    const lines = renderSummary(store.snapshot(), { cols: 110, rows: 10, now: now() }).map(strip);
-    expect(lines[0]).toMatch(/agent\s+status\s+active\s+tokens in \/ out/);
+    // Narrow enough that there's no room for a timeline.
+    const lines = renderSummary(store.snapshot(), { cols: 80, rows: 10, now: now() }).map(strip);
+    expect(lines[0]).toMatch(/agent\s+status\s+active\s+tokens in \/ out$/);
     expect(lines[1]).toMatch(/^ ● orchestrator · Wordfreq feature\s+active\s+49s\s+0 \/ 0$/);
     expect(lines[2]).toMatch(/^ ├─ ○ Research: word splitting\s+idle\s+18s\s+8\.1k \/ 600$/);
     expect(lines[3]).toMatch(/^ └─ ◌ Navigator: implementation\s+waiting\s+0s/); // its driver is active
     expect(lines[4]).toMatch(/^    └─ ● Driver: implementation\s+active\s+31s/);
     expect(lines[5]).toMatch(/^ total\s+1m38s\s+8\.1k \/ 600$/);
+
+    // Wide: a timeline fills the rest. Research ran first, the driver after it.
+    const wide = renderSummary(store.snapshot(), { cols: 120, rows: 10, now: now() }).map(strip);
+    expect(wide[0]).toMatch(/tokens in \/ out  timeline · 49s/);
+    const bar = (l) => l.match(/[█· ]+$/)[0].trim();
+    expect(bar(wide[2])).toMatch(/^█+·+$/); // research: active, then idle
+    expect(bar(wide[4])).toMatch(/^█+$/); // driver: active since it started
+    expect(wide[2].indexOf("█")).toBeLessThan(wide[4].indexOf("█"));
+  });
+
+  test("model and cost columns appear only when there is something to show", () => {
+    const { store, ev } = setup();
+    store.meta(RES, { model: "sonnet" });
+    ev("session.created", { sessionID: RES, parentID: ROOT, title: "Research: x" });
+    let lines = renderSummary(store.snapshot(), { cols: 90, rows: 10, now: 0 }).map(strip);
+    expect(lines[0]).toMatch(/tokens in \/ out  model/);
+    expect(lines[0]).not.toContain("cost");
+    expect(lines[2]).toMatch(/0 \/ 0  sonnet/);
+    store.meta(RES, { cost: 0.4321 });
+    lines = renderSummary(store.snapshot(), { cols: 90, rows: 10, now: 0 }).map(strip);
+    expect(lines[0]).toMatch(/model\s+cost/);
+    expect(lines[2]).toMatch(/sonnet\s+\$0\.43/);
+    expect(lines.at(-1)).toMatch(/\$0\.43$/); // total
+    // Very narrow: the model column goes first.
+    expect(renderSummary(store.snapshot(), { cols: 60, rows: 10, now: 0 }).map(strip)[0]).not.toContain("model");
+  });
+
+  test("timelineBar marks active slots, idle after the first run, blank before", () => {
+    expect(timelineBar([[20, 40], [70, null]], 0, 100, 10, 100)).toBe("  ██···███");
+    expect(timelineBar([], 0, 100, 4, 100)).toBe("    ");
+    expect(formatCost(0)).toBe("");
+    expect(formatCost(0.004)).toBe("<$0.01");
+    expect(formatCost(1.5)).toBe("$1.50");
   });
 
   test("shows needs input and a placeholder before a root exists", () => {

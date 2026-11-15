@@ -1,11 +1,15 @@
 // Summary strip: a live tree of the orchestrator and its subagents with an
-// active/idle indicator, total active time and tokens in/out per agent.
+// active/idle indicator, total active time, tokens in/out, model and cost per
+// agent, and a timeline of when each agent was working.
 //
 // The store runs in the parent TUI (fed with session events) and writes JSON;
 // the same file run as a script renders that JSON in the summary pane:
 //   BUN_BE_BUN=1 opencode summary.js --state <file> [--owner <TUI pid>]
 import fs from "node:fs";
 import { watchOwner } from "./watchdog.js";
+
+/** Runs kept per agent for the timeline (oldest dropped first). */
+const MAX_RUNS = 200;
 
 const STOP_EVENTS = new Set([
   "session.execution.succeeded",
@@ -35,7 +39,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
   function stats(id) {
     let s = sessions.get(id);
     if (!s) {
-      s = { id, title: null, order: seq++, running: false, runStart: null, activeMs: 0, blockers: new Set(), tokensIn: 0, tokensOut: 0 };
+      s = { id, title: null, order: seq++, running: false, runStart: null, activeMs: 0, blockers: new Set(), tokensIn: 0, tokensOut: 0, model: null, cost: 0, runs: [] };
       sessions.set(id, s);
     }
     return s;
@@ -57,6 +61,9 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
         blocked: s.blockers.size > 0,
         tokensIn: s.tokensIn,
         tokensOut: s.tokensOut,
+        model: s.model,
+        cost: s.cost,
+        runs: s.runs.map((r) => [r.start, r.end]),
       })),
     };
   }
@@ -99,11 +106,15 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
         if (!s.running) {
           s.running = true;
           s.runStart = now();
+          s.runs.push({ start: s.runStart, end: null });
+          if (s.runs.length > MAX_RUNS) s.runs.shift();
         }
         return touch(true);
       }
       if (STOP_EVENTS.has(type)) {
         if (s.running) s.activeMs += now() - s.runStart;
+        const open = s.runs.at(-1);
+        if (open && open.end === null) open.end = now();
         s.running = false;
         s.runStart = null;
         return touch(true);
@@ -132,6 +143,23 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
       touch();
     },
 
+    /** Model and cost for a session, from opencode's cache (cost is cumulative). */
+    meta(id, { model, cost } = {}) {
+      syncRoot();
+      if (!currentRoot || !inTree(id)) return;
+      const s = stats(id);
+      let changed = false;
+      if (typeof model === "string" && model && model !== s.model) {
+        s.model = model;
+        changed = true;
+      }
+      if (typeof cost === "number" && Number.isFinite(cost) && cost > s.cost) {
+        s.cost = cost;
+        changed = true;
+      }
+      if (changed) touch();
+    },
+
     /**
      * Seed a session that existed before this TUI attached, from opencode's
      * cache: totals so far, and whether (and since when) it is running. Active
@@ -145,6 +173,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
       if (running && !s.running) {
         s.running = true;
         s.runStart = runStart ?? now();
+        s.runs.push({ start: s.runStart, end: null });
       }
       s.tokensIn = Math.max(s.tokensIn, tokensIn);
       s.tokensOut = Math.max(s.tokensOut, tokensOut);
@@ -212,7 +241,30 @@ export function treeRows(snap) {
 }
 
 const pad = (s, n) => (s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length));
-const padStart = (s, n) => (s.length >= n ? s : " ".repeat(n - s.length) + s);
+const padStart = (s, n) => (s.length >= n ? s.slice(0, n) : " ".repeat(n - s.length) + s);
+
+export function formatCost(c) {
+  if (!c) return "";
+  return c < 0.01 ? "<$0.01" : `$${c.toFixed(2)}`;
+}
+
+/**
+ * One timeline row: `width` slots spanning [t0, t1]; a slot is active ("█") if
+ * any run overlaps it, idle ("·") once the agent has started, blank before.
+ */
+export function timelineBar(runs, t0, t1, width, now) {
+  if (width <= 0) return "";
+  const span = Math.max(1, t1 - t0);
+  const first = runs.length ? Math.min(...runs.map(([a]) => a)) : Infinity;
+  let out = "";
+  for (let i = 0; i < width; i++) {
+    const a = t0 + (span * i) / width;
+    const b = t0 + (span * (i + 1)) / width;
+    const active = runs.some(([start, end]) => start < b && (end ?? now) > a);
+    out += active ? "█" : b > first ? "·" : " ";
+  }
+  return out;
+}
 
 /** Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane. */
 export function renderSummary(snap, { cols, rows, now = Date.now() }) {
@@ -220,10 +272,6 @@ export function renderSummary(snap, { cols, rows, now = Date.now() }) {
   const tree = treeRows(snap);
   const active = (s) => s.activeMs + (s.running && s.runStart != null ? now - s.runStart : 0);
   const name = (s) => (s.id === snap.root ? `orchestrator${s.title ? ` · ${s.title}` : ""}` : s.title ?? `subagent ${s.id.slice(-6)}`);
-
-  const STATUS_W = 12, TIME_W = 8, TOK_W = 18;
-  const nameW = Math.max(16, Math.min(60, cols - (STATUS_W + TIME_W + TOK_W + 6)));
-  const line = (n, st, t, tok) => ` ${pad(n, nameW)} ${pad(st, STATUS_W)}${padStart(t, TIME_W)}  ${padStart(tok, TOK_W)}`;
 
   // An agent that isn't running but has a running descendant is waiting on it.
   const kids = new Map();
@@ -235,8 +283,38 @@ export function renderSummary(snap, { cols, rows, now = Date.now() }) {
   }
   const busyBelow = (id) => (kids.get(id) ?? []).some((k) => k.running || k.blocked || busyBelow(k.id));
 
-  const out = [`${BOLD}${line("agent", "status", "active", "tokens in / out")}${RESET}`];
-  let totalMs = 0, totalIn = 0, totalOut = 0;
+  // Columns: name, status, active, tokens, then model and cost when there is
+  // anything to show, and a timeline in whatever width is left.
+  const sessions = tree.map((r) => r.session);
+  const STATUS_W = 11, TIME_W = 7, TOK_W = 16, COST_W = 8;
+  const models = sessions.map((s) => s.model ?? "");
+  let modelW = Math.min(18, Math.max(0, ...models.map((m) => m.length)));
+  if (modelW) modelW = Math.max(modelW, 5);
+  const costW = sessions.some((s) => s.cost > 0) ? COST_W : 0;
+  const natural = Math.max(...tree.map(({ session: s, prefix }) => prefix.length + 2 + name(s).length));
+  let nameW = Math.max(16, Math.min(44, natural));
+  const fixed = () => 1 + nameW + 1 + STATUS_W + TIME_W + 2 + TOK_W + (modelW ? 2 + modelW : 0) + (costW ? 2 + costW : 0);
+  if (fixed() > cols) modelW = 0; // narrow: drop the model column first
+  while (fixed() > cols && nameW > 16) nameW -= 1;
+  const rest = cols - fixed() - 2;
+  const timelineW = rest >= 12 ? rest : 0;
+
+  const runsOf = (s) => s.runs ?? (s.runStart != null ? [[s.runStart, s.running ? null : s.runStart]] : []);
+  const allRuns = sessions.flatMap(runsOf);
+  const t0 = allRuns.length ? Math.min(...allRuns.map(([a]) => a)) : now;
+  const anyRunning = sessions.some((s) => s.running);
+  const t1 = anyRunning || !allRuns.length ? now : Math.max(...allRuns.map(([, b]) => b ?? now));
+
+  const line = (n, st, t, tok, model, cost, timeline) =>
+    ` ${pad(n, nameW)} ${pad(st, STATUS_W)}${padStart(t, TIME_W)}  ${padStart(tok, TOK_W)}` +
+    (modelW ? `  ${pad(model, modelW)}` : "") +
+    (costW ? `  ${padStart(cost, costW)}` : "") +
+    (timelineW && timeline ? `  ${timeline}` : "");
+
+  const span = formatDuration(t1 - t0);
+  const timelineHead = timelineW ? pad(`timeline${allRuns.length ? ` · ${span}` : ""}`, timelineW) : "";
+  const out = [`${BOLD}${line("agent", "status", "active", "tokens in / out", "model", "cost", timelineHead).trimEnd()}${RESET}`];
+  let totalMs = 0, totalIn = 0, totalOut = 0, totalCost = 0;
   for (const { session: s, prefix } of tree) {
     const [icon, color, status] = s.blocked
       ? ["▲", RED, "needs input"]
@@ -249,13 +327,17 @@ export function renderSummary(snap, { cols, rows, now = Date.now() }) {
     totalMs += ms;
     totalIn += s.tokensIn;
     totalOut += s.tokensOut;
-    const text = line(`${prefix}${icon} ${name(s)}`, status, formatDuration(ms), `${formatTokens(s.tokensIn)} / ${formatTokens(s.tokensOut)}`);
-    // Colour the indicator and status, keep the tree lines plain.
+    totalCost += s.cost ?? 0;
+    const bar = timelineW ? timelineBar(runsOf(s), t0, t1, timelineW, now) : "";
+    const text = line(`${prefix}${icon} ${name(s)}`, status, formatDuration(ms), `${formatTokens(s.tokensIn)} / ${formatTokens(s.tokensOut)}`, s.model ?? "", formatCost(s.cost), bar);
+    // Colour the indicator, status and active timeline slots; keep the tree lines plain.
     const iconAt = 1 + prefix.length;
-    out.push(text.slice(0, iconAt) + color + icon + RESET + text.slice(iconAt + 1).replace(status, `${color}${status}${RESET}`));
+    let styled = text.slice(0, iconAt) + color + icon + RESET + text.slice(iconAt + 1).replace(status, `${color}${status}${RESET}`);
+    if (bar) styled = styled.slice(0, styled.length - bar.length) + bar.replace(/█+/g, (m) => `${GREEN}${m}${RESET}`);
+    out.push(styled);
   }
   if (tree.length > 1) {
-    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`)}${RESET}`);
+    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`, "", formatCost(totalCost), "").trimEnd()}${RESET}`);
   }
   return out.slice(0, rows);
 }

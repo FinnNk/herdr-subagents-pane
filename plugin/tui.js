@@ -191,6 +191,12 @@ function setup(api) {
     titleOf: (id) => controller.titleOf(id),
   });
 
+  /** Model and cost for the strip, from opencode's cache. */
+  function updateMeta(id) {
+    const d = api.data.session.get(id);
+    if (d) summary.meta(id, { model: d.model?.id, cost: d.cost });
+  }
+
   // Subagents that already exist when this TUI shows a session (e.g. after a
   // restart, or when opening a session mid-run) never send session.created
   // here, so look them up once per root.
@@ -233,6 +239,7 @@ function setup(api) {
           tokensIn: (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0),
           tokensOut: (t.output ?? 0) + (t.reasoning ?? 0),
         });
+        updateMeta(id);
       }
     } catch (err) {
       log("adopting existing subagents failed", { err: String(err) });
@@ -252,6 +259,7 @@ function setup(api) {
     const id = details.data?.sessionID;
     if (id && controller.isTracked(id)) cards.handle(details.type, details.data);
     summary.handle(details.type, details.data);
+    if (id && (id === controller.root || controller.isTracked(id))) updateMeta(id);
     if (controller.root) summary.title(controller.root, api.data.session.get(controller.root)?.title);
   });
   syncRoute();
