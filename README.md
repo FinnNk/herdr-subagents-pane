@@ -3,7 +3,7 @@
 An [opencode](https://opencode.ai) v2 plugin that opens a [herdr](https://herdr.dev) pane for each
 subagent, so you can watch it work next to the main agent.
 
-- When the session in your opencode TUI spawns a subagent and it keeps working for 10 seconds, a
+- When the session in your opencode TUI spawns a subagent and it keeps working for 5 seconds, a
   viewer pane opens for it, so quick subagents don't flash a pane open and shut (they still appear
   in the summary strip). A subagent that asks for input gets its pane at once, and so does one
   whose own subagent is working. Subagents can be excluded by agent name or title. **Layout:** the orchestrator keeps the left third of its pane and
@@ -76,7 +76,7 @@ Every key is optional; these are the defaults:
 {
   "enabled": true,
   "autoClose": true,
-  "openDelaySeconds": 10,
+  "openDelaySeconds": 5,
   "closeDelaySeconds": 20,
   "settleSeconds": 3,
   "maxPanes": 4,

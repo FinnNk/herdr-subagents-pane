@@ -33,7 +33,7 @@ describe("loadConfig", () => {
       config: {
         enabled: true,
         autoClose: true,
-        openDelayMs: 10_000,
+        openDelayMs: 5_000,
         closeDelayMs: 20_000,
         settleMs: 3_000,
         maxPanes: 4,

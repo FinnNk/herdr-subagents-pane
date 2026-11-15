@@ -16,7 +16,7 @@ export const CONFIG_FILE_NAME = "herdr-subagents-pane.json";
 export const DEFAULTS = Object.freeze({
   enabled: true,
   autoClose: true,
-  openDelaySeconds: 10,
+  openDelaySeconds: 5,
   closeDelaySeconds: 20,
   settleSeconds: 3,
   maxPanes: 4,
