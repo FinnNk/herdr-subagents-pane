@@ -3,9 +3,12 @@
 An [opencode](https://opencode.ai) v2 plugin that opens a [herdr](https://herdr.dev) pane for each
 subagent, so you can watch it work next to the main agent.
 
-- When the session in your opencode TUI spawns a subagent, a viewer pane opens to the right
-  running `opencode --session <child>`. Later subagents stack below the most recently opened
-  viewer, so the column reads top to bottom in the order things happened.
+- When the session in your opencode TUI spawns a subagent, a viewer pane opens running
+  `opencode --session <child>`. **Layout:** the orchestrator keeps the left third of its pane and
+  each task gets a column to the right. Name subagents `<Role>: <Task>` (the orchestrator chooses
+  the description) and subagents with the same task share a column, e.g. `Driver: implementation`
+  and `Navigator: implementation` stack in one column while `Research: word splitting` gets its own.
+  A description without a colon gets a column of its own.
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
   `· working (round 2)` when the parent resumes it, `· waiting`, `· needs input`, or
   `· done, closing in 20s`.

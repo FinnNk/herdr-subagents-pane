@@ -12,14 +12,24 @@
 //   reliable "done" signal (e.g. a driver/navigator loop relayed via the parent).
 // - Any activity anywhere in the tree cancels pending closes.
 // - At the pane cap, the oldest idle viewer is closed to make room.
-// - New viewers stack below the most recently opened one, so the column stays
-//   in the order things happened.
+// - Layout: the orchestrator keeps the left third; each task gets a column.
+//   Subagents titled "<Role>: <Task>" with the same task share a column
+//   (e.g. "Driver: implementation" and "Navigator: implementation" stack in
+//   one column). A title without a colon gets a column of its own.
 // - Labels carry status: "· working (round 2)", "· waiting", "· needs input",
 //   "· done, closing in 30s".
 
 export const DEFAULT_CLOSE_DELAY_MS = 20_000;
 export const DEFAULT_MAX_PANES = 4;
 export const DEFAULT_SETTLE_MS = 3_000;
+/** Share of its pane the orchestrator keeps when the first column opens. */
+export const ORCHESTRATOR_SHARE = 1 / 3;
+
+/** Column key for a subagent: the task part of "<Role>: <Task>", else its own id. */
+export function taskKey(title, id) {
+  const m = typeof title === "string" ? title.match(/^[^:]+:\s*(.+)$/) : null;
+  return m ? m[1].trim().toLowerCase() : `id:${id}`;
+}
 
 const STOP_EVENTS = new Set([
   "session.execution.succeeded",
@@ -29,7 +39,7 @@ const STOP_EVENTS = new Set([
 
 /**
  * @param {object} opts
- * @param {{ open(childId: string, anchor: {paneId?: string, direction: "right"|"down"}, label: string): Promise<string|undefined>,
+ * @param {{ open(childId: string, anchor: {paneId?: string, direction: "right"|"down", ratio?: number}, label: string): Promise<string|undefined>,
  *           exists(paneId: string): Promise<boolean>,
  *           close(paneId: string): Promise<void>,
  *           rename?(paneId: string, label: string): Promise<void> }} opts.panes
@@ -99,6 +109,7 @@ export function createController({
       c = {
         id,
         title: undefined,
+        column: undefined, // task key the current pane was placed under
         paneId: undefined,
         openedSeq: 0, // order in which the current pane was opened (stacking)
         rounds: 0, // number of times the subagent started work
@@ -159,11 +170,32 @@ export function createController({
     return [...children.values()].filter((c) => c.paneId);
   }
 
-  /** The most recently opened viewer: new viewers stack below it. */
-  function bottomPane(except) {
-    let best;
-    for (const c of openPanes()) if (c !== except && (!best || c.openedSeq > best.openedSeq)) best = c;
-    return best?.paneId;
+  /** Open viewers grouped by column, columns ordered left to right (by first open). */
+  function columns(except) {
+    const byKey = new Map();
+    for (const o of openPanes()) {
+      if (o === except) continue;
+      if (!byKey.has(o.column)) byKey.set(o.column, []);
+      byKey.get(o.column).push(o);
+    }
+    const cols = [...byKey.entries()].map(([key, members]) => ({
+      key,
+      members: members.sort((a, b) => a.openedSeq - b.openedSeq),
+    }));
+    return cols.sort((a, b) => a.members[0].openedSeq - b.members[0].openedSeq);
+  }
+
+  /** Where a new viewer goes: its task's column, else a new column on the right. */
+  function placement(c) {
+    const key = taskKey(c.title, c.id);
+    const cols = columns(c);
+    const own = cols.find((col) => col.key === key);
+    if (own) return { key, anchor: { paneId: own.members.at(-1).paneId, direction: "down" } };
+    if (cols.length === 0) return { key, anchor: { direction: "right", ratio: ORCHESTRATOR_SHARE } };
+    // herdr splits single panes, so a full-height column needs a single-pane column to split.
+    const single = [...cols].reverse().find((col) => col.members.length === 1);
+    const from = (single ?? cols.at(-1)).members[0];
+    return { key, anchor: { paneId: from.paneId, direction: "right", ratio: 0.5 } };
   }
 
   /** Oldest idle viewer whose parent is idle too, or failing that any idle viewer. */
@@ -197,8 +229,8 @@ export function createController({
         }
         await closePane(victim, "evicted for a newer subagent");
       }
-      const stackOn = bottomPane(c);
-      const anchor = stackOn ? { paneId: stackOn, direction: "down" } : { direction: "right" };
+      const { key, anchor } = placement(c);
+      c.column = key;
       c.shownLabel = label(c);
       c.paneId = await panes.open(c.id, anchor, c.shownLabel);
       c.openedSeq = ++openSeq;

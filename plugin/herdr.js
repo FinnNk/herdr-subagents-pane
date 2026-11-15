@@ -37,6 +37,7 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {} })
     async open(childId, anchor, label) {
       const target = anchor.paneId ?? parentPaneId;
       const args = ["pane", "split", target, "--direction", anchor.direction, "--cwd", cwd, "--no-focus"];
+      if (anchor.ratio) args.push("--ratio", String(anchor.ratio));
       for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
       const res = await herdr(args);
       const paneId = res?.result?.pane?.pane_id;

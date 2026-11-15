@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createController } from "../plugin/controller.js";
+import { createController, taskKey } from "../plugin/controller.js";
 
 const ROOT = "ses_root";
 const A = "ses_childA";
@@ -37,10 +37,12 @@ function fakePanes() {
   let n = 0;
   const open = new Map(); // paneId -> label
   const calls = [];
+  const anchors = []; // [childId, paneId, anchor]
   return {
     open: async (childId, anchor, label) => {
       const id = `w1:p${++n}`;
       open.set(id, label);
+      anchors.push([childId, id, anchor]);
       calls.push(["open", childId, anchor.paneId ?? "parent", anchor.direction]);
       return id;
     },
@@ -56,6 +58,7 @@ function fakePanes() {
     userCloses: (paneId) => open.delete(paneId),
     open_: open,
     calls,
+    anchors,
     opens: () => calls.filter((x) => x[0] === "open"),
     closes: () => calls.filter((x) => x[0] === "close"),
   };
@@ -90,12 +93,11 @@ describe("opening", () => {
     expect(labelOf("w1:p1")).toBe("subagent childA · starting");
   });
 
-  test("stacks further subagents below the previous viewer", async () => {
+  test("the first viewer leaves the orchestrator a third of its pane", async () => {
     const { c, panes, spawn } = setup();
-    spawn(A);
-    spawn(B);
+    spawn(A, ROOT, "Research: word splitting");
     await c.idle();
-    expect(panes.opens()[1]).toEqual(["open", B, "w1:p1", "down"]);
+    expect(panes.anchors[0][2]).toEqual({ direction: "right", ratio: 1 / 3 });
   });
 
   test("ignores sessions that are not descendants of this TUI's root", async () => {
@@ -413,23 +415,57 @@ describe("tree-quiet closing", () => {
 });
 
 describe("layout and capacity", () => {
-  test("new viewers always stack below the most recently opened one", async () => {
-    const C = "ses_childC";
-    const { c, panes, spawn, start, stop } = setup();
+  test("taskKey groups '<Role>: <Task>' titles by task", () => {
+    expect(taskKey("Driver: implementation", "x")).toBe("implementation");
+    expect(taskKey("Navigator:  Implementation ", "y")).toBe("implementation");
+    expect(taskKey("Research", "z")).toBe("id:z");
+    expect(taskKey(undefined, "z")).toBe("id:z");
+  });
+
+  test("each task gets a column; same-task subagents stack in it", async () => {
+    const R = "ses_research", NAV = "ses_nav", DRV = "ses_drv";
+    const { c, panes, spawn } = setup();
+    spawn(R, ROOT, "Research: word splitting");
+    spawn(NAV, ROOT, "Navigator: implementation");
+    spawn(DRV, ROOT, "Driver: implementation");
+    await c.idle();
+    expect(panes.anchors).toEqual([
+      [R, "w1:p1", { direction: "right", ratio: 1 / 3 }], // orchestrator keeps 1/3
+      [NAV, "w1:p2", { paneId: "w1:p1", direction: "right", ratio: 0.5 }], // new column
+      [DRV, "w1:p3", { paneId: "w1:p2", direction: "down" }], // stacks under navigator
+    ]);
+  });
+
+  test("untitled subagents each get their own column", async () => {
+    const { c, panes, spawn } = setup();
     spawn(A);
     spawn(B);
-    start(B); // B stays busy throughout
-    start(A);
-    stop(A);
     await c.idle();
-    panes.userCloses("w1:p1"); // A's pane (top) is closed by the user
-    start(A); // A reopens -> goes to the bottom, below B
+    expect(panes.anchors[1][2]).toEqual({ paneId: "w1:p1", direction: "right", ratio: 0.5 });
+  });
+
+  test("a new column splits the rightmost single-pane column so it is full height", async () => {
+    const { c, panes, spawn } = setup();
+    spawn("ses_r", ROOT, "Research: a");
+    spawn("ses_n", ROOT, "Navigator: impl");
+    spawn("ses_d", ROOT, "Driver: impl"); // impl column now has 2 panes
+    spawn("ses_x", ROOT, "Docs: b");
     await c.idle();
-    spawn(C); // C goes below A (the newest), not below B
+    expect(panes.anchors[3][2]).toEqual({ paneId: "w1:p1", direction: "right", ratio: 0.5 });
+  });
+
+  test("a reopened viewer goes back into its task's column", async () => {
+    const NAV = "ses_nav", DRV = "ses_drv";
+    const { c, panes, spawn, start } = setup();
+    spawn("ses_r", ROOT, "Research: a");
+    spawn(NAV, ROOT, "Navigator: impl");
+    spawn(DRV, ROOT, "Driver: impl");
+    start(DRV);
     await c.idle();
-    const opens = panes.opens();
-    expect(opens[2]).toEqual(["open", A, "w1:p2", "down"]);
-    expect(opens[3]).toEqual(["open", C, "w1:p3", "down"]);
+    panes.userCloses("w1:p2"); // navigator pane closed by the user
+    start(NAV);
+    await c.idle();
+    expect(panes.anchors.at(-1)).toEqual([NAV, "w1:p4", { paneId: "w1:p3", direction: "down" }]);
   });
 
   test("at the cap, the oldest idle viewer is closed to make room", async () => {
