@@ -9,8 +9,9 @@ General setup for every demo:
   (`{ "plugins": ["/path/to/herdr-subagents-pane/plugin"] }`), either in
   `~/.config/opencode/cli.json` or in a directory pointed to by `OPENCODE_CONFIG_DIR`.
 - Use a model that follows multi-step instructions reliably.
-- Optional: `HERDR_SUBAGENTS_CLOSE_DELAY_MS=30000` keeps the panes up a little longer at the
-  end, so there's time to look at the final state.
+- Optional: `"closeDelaySeconds": 30` in `herdr-subagents-pane.json` keeps the panes up a little
+  longer at the end, so there's time to look at the final state. `"autoClose": false` keeps them
+  open until you close them.
 
 ---
 

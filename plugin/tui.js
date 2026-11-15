@@ -8,7 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createController, DEFAULT_CLOSE_DELAY_MS, DEFAULT_MAX_PANES, DEFAULT_SETTLE_MS } from "./controller.js";
+import { createController } from "./controller.js";
+import { loadConfig } from "./config.js";
 import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 import { createSummaryStore } from "./summary.js";
@@ -19,11 +20,6 @@ const CARD_SCRIPT = fileURLToPath(new URL("./card.js", import.meta.url));
 const SUMMARY_SCRIPT = fileURLToPath(new URL("./summary.js", import.meta.url));
 /** Share of its height the orchestrator pane keeps when the summary strip opens below it. */
 const STRIP_RATIO = 0.84;
-
-function intFromEnv(name, fallback) {
-  const n = Number.parseInt(process.env[name] ?? "", 10);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
 
 /** The --server URL this TUI was started with, if any (default: background service). */
 export function serverFromArgv(argv) {
@@ -40,8 +36,7 @@ function opencodeBinary() {
   return exe && path.basename(exe).startsWith("opencode") ? exe : "opencode";
 }
 
-function makeLogger() {
-  const file = process.env.HERDR_SUBAGENTS_DEBUG;
+function makeLogger(file) {
   if (!file) return () => {};
   return (msg, extra) => {
     try {
@@ -82,7 +77,16 @@ function setup(api) {
   // Viewer panes run this same plugin; they must not open panes of their own.
   if (process.env[VIEWER_ENV] === "1") return;
 
-  const log = makeLogger();
+  const { config, source, warnings } = loadConfig();
+  if (!config.enabled) return;
+  const log = makeLogger(config.debugLog);
+  log("config", { source: source ?? "(defaults)", config });
+  if (warnings.length) {
+    for (const w of warnings) log("config warning", { w });
+    try {
+      api.ui?.toast?.show({ variant: "warning", title: "herdr-subagents-pane config", message: warnings.join("\n") });
+    } catch {}
+  }
   const server = serverFromArgv(process.argv.slice(2));
   const bin = opencodeBinary();
   const env = { [VIEWER_ENV]: "1" };
@@ -122,7 +126,7 @@ function setup(api) {
   // Summary strip: a full-width pane along the bottom with the agent tree. It is
   // split off the orchestrator's pane before the first column so it spans the
   // whole width, and closed together with the last viewer.
-  const stripEnabled = process.env.HERDR_SUBAGENTS_SUMMARY !== "0";
+  const stripEnabled = config.summary;
   const summaryFile = path.join(cardDir, "summary.json");
   let stripPane;
   const viewerPanes = new Set();
@@ -168,9 +172,10 @@ function setup(api) {
     lookupRunning: (id) => api.data.session.status(id) === "running",
     onStatus: (id, info) => cards.status(id, info),
     isPinned: (id) => fs.existsSync(`${stateFile(id)}.expanded`),
-    closeDelayMs: intFromEnv("HERDR_SUBAGENTS_CLOSE_DELAY_MS", DEFAULT_CLOSE_DELAY_MS),
-    maxPanes: intFromEnv("HERDR_SUBAGENTS_MAX_PANES", DEFAULT_MAX_PANES),
-    settleMs: intFromEnv("HERDR_SUBAGENTS_SETTLE_MS", DEFAULT_SETTLE_MS),
+    autoClose: config.autoClose,
+    closeDelayMs: config.closeDelayMs,
+    maxPanes: config.maxPanes,
+    settleMs: config.settleMs,
     log,
   });
 

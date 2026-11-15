@@ -23,7 +23,7 @@ subagent, so you can watch it work next to the main agent.
   indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
   active time (ticking while it works), and tokens in / out (in includes cached prompt tokens, out
   includes reasoning), plus a total. It opens with the first subagent and closes with the last
-  viewer. Set `HERDR_SUBAGENTS_SUMMARY=0` to turn it off.
+  viewer. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
   `· working (run 2)` each time it starts working again (resumed by its parent, or after
   its own subagents report back), `· waiting`, `· needs input`, or
@@ -52,15 +52,42 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 }
 ```
 
-## Configuration (environment variables)
+## Configuration
 
-| Variable | Default | Meaning |
+Settings come from a JSON file, and environment variables override the file. The file is the
+first of these that exists:
+
+1. the path in `HERDR_SUBAGENTS_CONFIG` (if set, nothing else is tried)
+2. `$OPENCODE_CONFIG_DIR/herdr-subagents-pane.json`
+3. `~/.config/opencode/herdr-subagents-pane.json` (or under `$XDG_CONFIG_HOME`)
+
+Every key is optional; these are the defaults:
+
+```json
+{
+  "enabled": true,
+  "autoClose": true,
+  "closeDelaySeconds": 20,
+  "settleSeconds": 3,
+  "maxPanes": 4,
+  "summary": true,
+  "debugLog": null
+}
+```
+
+| Key | Environment variable | Meaning |
 | --- | --- | --- |
-| `HERDR_SUBAGENTS_CLOSE_DELAY_MS` | `20000` | Debounce before closing an idle subagent's pane |
-| `HERDR_SUBAGENTS_SETTLE_MS` | `3000` | How long the workflow must stay quiet before countdowns start |
-| `HERDR_SUBAGENTS_MAX_PANES` | `4` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
-| `HERDR_SUBAGENTS_SUMMARY` | `1` | Set to `0` to hide the summary strip |
-| `HERDR_SUBAGENTS_DEBUG` | unset | Path of a file to append debug logs to |
+| `enabled` | `HERDR_SUBAGENTS_ENABLED` (`1`/`0`) | Master switch. `false` turns the plugin off without uninstalling it |
+| `autoClose` | `HERDR_SUBAGENTS_AUTO_CLOSE` (`1`/`0`) | Close panes once the workflow is quiet. `false` keeps them open, labelled `done`, until you close them (the pane cap still applies) |
+| `closeDelaySeconds` | `HERDR_SUBAGENTS_CLOSE_DELAY_MS` (ms) | Countdown before an idle subagent's pane closes |
+| `settleSeconds` | `HERDR_SUBAGENTS_SETTLE_MS` (ms) | How long the workflow must stay quiet before countdowns start |
+| `maxPanes` | `HERDR_SUBAGENTS_MAX_PANES` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
+| `summary` | `HERDR_SUBAGENTS_SUMMARY` (`1`/`0`) | Show the summary strip |
+| `debugLog` | `HERDR_SUBAGENTS_DEBUG` | Path of a file to append debug logs to |
+
+Boolean variables also accept `true`/`false`, `yes`/`no` and `on`/`off`. Invalid values and
+unknown keys are ignored (the default is kept) and reported in a warning toast when opencode
+starts. Settings are read once at startup, so restart opencode after changing them.
 
 ## Recipe: a navigator that directs its own driver
 
