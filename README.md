@@ -23,7 +23,8 @@ subagent, so you can watch it work next to the main agent.
   includes reasoning), plus a total. It opens with the first subagent and closes with the last
   viewer. Set `HERDR_SUBAGENTS_SUMMARY=0` to turn it off.
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
-  `· working (round 2)` when the parent resumes it, `· waiting`, `· needs input`, or
+  `· working (run 2)` each time it starts working again (resumed by its parent, or after
+  its own subagents report back), `· waiting`, `· needs input`, or
   `· done, closing in 20s`.
 - **Debounced close once the workflow is quiet:** countdowns (default 20s) start only when nothing
   under the main session (the main session included) is running or waiting for input, and has

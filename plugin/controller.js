@@ -16,7 +16,7 @@
 //   Subagents titled "<Role>: <Task>" with the same task share a column
 //   (e.g. "Driver: implementation" and "Navigator: implementation" stack in
 //   one column). A title without a colon gets a column of its own.
-// - Labels carry status: "· working (round 2)", "· waiting", "· needs input",
+// - Labels carry status: "· working (run 2)", "· waiting", "· needs input",
 //   "· done, closing in 30s".
 
 export const DEFAULT_CLOSE_DELAY_MS = 20_000;
@@ -149,7 +149,7 @@ export function createController({
   function status(c) {
     if (c.blockers.size > 0) return "needs input";
     if (c.rounds === 0 && !isRunning(c.id)) return "starting";
-    if (isRunning(c.id)) return c.rounds > 1 ? `working (round ${c.rounds})` : "working";
+    if (isRunning(c.id)) return c.rounds > 1 ? `working (run ${c.rounds})` : "working";
     if (c.closeTimer !== undefined) return `done, closing in ${Math.round(closeDelayMs / 1000)}s`;
     return "waiting";
   }

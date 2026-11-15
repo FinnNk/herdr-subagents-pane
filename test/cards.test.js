@@ -97,7 +97,7 @@ describe("renderCard", () => {
   const base = {
     id: "A",
     title: "Navigator: implementation",
-    status: "working (round 2)",
+    status: "working (run 2)",
     rounds: 2,
     startedAt: 0,
     endedAt: null,
@@ -109,7 +109,7 @@ describe("renderCard", () => {
   test("shows title, status with elapsed time, incoming message, tool, text and hint", () => {
     const lines = renderCard(base, { cols: 60, rows: 14, now: 65_000 }).map(strip);
     expect(lines[0]).toBe(" Navigator: implementation");
-    expect(lines[1]).toBe(" ● working (round 2)  ·  1m05s");
+    expect(lines[1]).toBe(" ● working (run 2)  ·  1m05s");
     expect(lines.join("\n")).toContain("← Driver says: implemented words()");
     expect(lines.join("\n")).toContain("⚙ read wordfreq.js");
     expect(lines.join("\n")).toContain("--top 0 should be rejected."); // markdown stripped

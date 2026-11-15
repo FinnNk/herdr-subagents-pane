@@ -311,12 +311,12 @@ describe("parent-aware closing (pairing)", () => {
     stop(DRV);
     start(NAV); // review
     await c.idle();
-    expect(labelOf("w1:p1")).toBe("Navigator · working (round 2)");
+    expect(labelOf("w1:p1")).toBe("Navigator · working (run 2)");
     expect(labelOf("w1:p2")).toBe("Driver · waiting");
     stop(NAV);
     start(DRV); // apply feedback
     await c.idle();
-    expect(labelOf("w1:p2")).toBe("Driver · working (round 2)");
+    expect(labelOf("w1:p2")).toBe("Driver · working (run 2)");
     stop(DRV);
     stop(ROOT);
     await c.idle();
@@ -555,7 +555,7 @@ describe("lifecycle", () => {
     const { c, panes, spawn, start } = setup();
     spawn(A);
     start(A);
-    start(A); // duplicate started, label "working (round 2)" once
+    start(A); // duplicate started, label "working (run 2)" once
     await c.idle();
     const renames = panes.calls.filter((x) => x[0] === "rename").map((x) => x[2]);
     expect(new Set(renames).size).toBe(renames.length);
