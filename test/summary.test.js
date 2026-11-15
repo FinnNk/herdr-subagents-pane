@@ -1,0 +1,113 @@
+import { describe, expect, test } from "bun:test";
+import { createSummaryStore, formatDuration, formatTokens, renderSummary, treeRows } from "../plugin/summary.js";
+import { summaryCommand } from "../plugin/tui.js";
+
+const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+const ROOT = "ses_root";
+const NAV = "ses_nav";
+const DRV = "ses_drv";
+const RES = "ses_res";
+
+function setup() {
+  let t = 0;
+  const parents = new Map([[RES, ROOT], [NAV, ROOT], [DRV, NAV]]);
+  const writes = [];
+  const store = createSummaryStore({
+    write: (snap) => writes.push(snap),
+    inTree: (id) => id === ROOT || parents.has(id),
+    parentOf: (id) => parents.get(id),
+    root: () => ROOT,
+    now: () => t,
+    throttleMs: 0,
+  });
+  const ev = (type, data) => store.handle(type, data);
+  return { store, ev, writes, tick: (ms) => (t += ms), now: () => t };
+}
+
+describe("summary store", () => {
+  test("accumulates active time across rounds and tracks running state", () => {
+    const { store, ev, tick } = setup();
+    ev("session.execution.started", { sessionID: NAV });
+    tick(10_000);
+    ev("session.execution.succeeded", { sessionID: NAV });
+    tick(50_000); // idle time doesn't count
+    ev("session.execution.started", { sessionID: NAV });
+    tick(5_000);
+    const nav = store.snapshot().sessions.find((s) => s.id === NAV);
+    expect(nav).toMatchObject({ running: true, activeMs: 10_000, runStart: 60_000 });
+  });
+
+  test("sums tokens in (incl. cache) and out (incl. reasoning) per agent", () => {
+    const { store, ev } = setup();
+    ev("session.step.ended", { sessionID: DRV, tokens: { input: 1000, output: 200, reasoning: 50, cache: { read: 4000, write: 100 } } });
+    ev("session.step.ended", { sessionID: DRV, tokens: { input: 500, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } });
+    const drv = store.snapshot().sessions.find((s) => s.id === DRV);
+    expect(drv).toMatchObject({ tokensIn: 5600, tokensOut: 350 });
+  });
+
+  test("ignores sessions outside the tree and records titles and blockers", () => {
+    const { store, ev } = setup();
+    ev("session.execution.started", { sessionID: "ses_elsewhere" });
+    ev("session.created", { sessionID: NAV, parentID: ROOT, title: "Navigator: implementation" });
+    ev("permission.asked", { sessionID: NAV, id: "p1" });
+    const snap = store.snapshot();
+    expect(snap.sessions.map((s) => s.id)).toEqual([ROOT, NAV]);
+    expect(snap.sessions[1]).toMatchObject({ title: "Navigator: implementation", blocked: true, parentID: ROOT });
+  });
+});
+
+describe("renderSummary", () => {
+  test("draws the tree with indicators, live active time, tokens and a total", () => {
+    const { store, ev, tick, now } = setup();
+    store.title(ROOT, "Wordfreq feature");
+    ev("session.execution.started", { sessionID: ROOT });
+    ev("session.created", { sessionID: RES, parentID: ROOT, title: "Research: word splitting" });
+    ev("session.created", { sessionID: NAV, parentID: ROOT, title: "Navigator: implementation" });
+    ev("session.created", { sessionID: DRV, parentID: NAV, title: "Driver: implementation" });
+    ev("session.execution.started", { sessionID: RES });
+    tick(18_000);
+    ev("session.execution.succeeded", { sessionID: RES });
+    ev("session.step.ended", { sessionID: RES, tokens: { input: 8100, output: 600 } });
+    ev("session.execution.started", { sessionID: DRV });
+    tick(31_000);
+    const lines = renderSummary(store.snapshot(), { cols: 110, rows: 10, now: now() }).map(strip);
+    expect(lines[0]).toMatch(/agent\s+status\s+active\s+tokens in \/ out/);
+    expect(lines[1]).toMatch(/^ ● orchestrator · Wordfreq feature\s+active\s+49s\s+0 \/ 0$/);
+    expect(lines[2]).toMatch(/^ ├─ ○ Research: word splitting\s+idle\s+18s\s+8\.1k \/ 600$/);
+    expect(lines[3]).toMatch(/^ └─ ◌ Navigator: implementation\s+waiting\s+0s/); // its driver is active
+    expect(lines[4]).toMatch(/^    └─ ● Driver: implementation\s+active\s+31s/);
+    expect(lines[5]).toMatch(/^ total\s+1m38s\s+8\.1k \/ 600$/);
+  });
+
+  test("shows needs input and a placeholder before a root exists", () => {
+    expect(strip(renderSummary(undefined, { cols: 80, rows: 5 })[0])).toContain("waiting for the orchestrator");
+    const snap = { root: ROOT, sessions: [{ id: ROOT, order: 0, blocked: true, running: true, activeMs: 0, runStart: 0, tokensIn: 0, tokensOut: 0 }] };
+    expect(strip(renderSummary(snap, { cols: 80, rows: 5, now: 0 })[1])).toContain("▲ orchestrator");
+  });
+
+  test("treeRows nests by parent in creation order", () => {
+    const snap = {
+      root: ROOT,
+      sessions: [
+        { id: ROOT, order: 0 },
+        { id: NAV, parentID: ROOT, order: 2 },
+        { id: RES, parentID: ROOT, order: 1 },
+        { id: DRV, parentID: NAV, order: 3 },
+      ],
+    };
+    expect(treeRows(snap).map((r) => `${r.prefix}${r.session.id}`)).toEqual([ROOT, `├─ ${RES}`, `└─ ${NAV}`, `   └─ ${DRV}`]);
+  });
+
+  test("formatters", () => {
+    expect(formatTokens(950)).toBe("950");
+    expect(formatTokens(25_300)).toBe("25.3k");
+    expect(formatTokens(1_250_000)).toBe("1.25M");
+    expect(formatDuration(98_000)).toBe("1m38s");
+    expect(formatDuration(3_720_000)).toBe("1h02m");
+  });
+});
+
+test("summaryCommand runs the summary script with embedded bun", () => {
+  expect(summaryCommand({ bin: "/o/opencode", summaryScript: "/p/summary.js", stateFile: "/r/s.json" }))
+    .toBe("exec env BUN_BE_BUN=1 '/o/opencode' '/p/summary.js' --state '/r/s.json'");
+});
