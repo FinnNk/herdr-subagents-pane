@@ -48,6 +48,7 @@ const STOP_EVENTS = new Set([
  *           rename?(paneId: string, label: string): Promise<void> }} opts.panes
  * @param {(id: string) => string|undefined} [opts.lookupParent] fallback parent lookup (e.g. opencode cache)
  * @param {(id: string) => boolean|undefined} [opts.lookupRunning] fallback "is this session running" (e.g. opencode cache)
+ * @param {boolean} [opts.autoClose] close panes once the tree is quiet (false: keep them, labelled "done")
  * @param {number} [opts.closeDelayMs] debounce before closing an idle subagent's pane
  * @param {number} [opts.settleMs] how long the tree must stay quiet before countdowns start
  * @param {number} [opts.maxPanes] cap on simultaneously open viewer panes
@@ -64,6 +65,7 @@ export function createController({
   lookupRunning = () => undefined,
   onStatus = () => {},
   isPinned = () => false,
+  autoClose = true,
   closeDelayMs = DEFAULT_CLOSE_DELAY_MS,
   settleMs = DEFAULT_SETTLE_MS,
   maxPanes = DEFAULT_MAX_PANES,
@@ -154,6 +156,7 @@ export function createController({
     if (c.rounds === 0 && !isRunning(c.id)) return "starting";
     if (isRunning(c.id)) return c.rounds > 1 ? `working (run ${c.rounds})` : "working";
     if (c.closeTimer !== undefined) return `done, closing in ${Math.round(closeDelayMs / 1000)}s`;
+    if (!autoClose && settled && closable(c)) return "done";
     return "waiting";
   }
 
@@ -292,6 +295,7 @@ export function createController({
   /** Debounced close; any activity by the child or its parent cancels it. */
   function scheduleClose(c) {
     cancelClose(c);
+    if (!autoClose) return refreshLabel(c); // panes stay open, labelled "done"
     // No pane yet: an open is in flight (it schedules the close when it lands)
     // or the cap stopped it (nothing to close).
     if (!c.paneId) return;

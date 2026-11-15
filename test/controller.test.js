@@ -340,6 +340,35 @@ describe("parent-aware closing (pairing)", () => {
 });
 
 describe("tree-quiet closing", () => {
+  test("with autoClose off, panes stay open labelled done, and reopen work as usual", async () => {
+    const { c, timers, panes, spawn, start, stop, labelOf } = setup({ autoClose: false });
+    start(ROOT);
+    spawn(A, ROOT, "Research");
+    start(A);
+    stop(A);
+    stop(ROOT);
+    await c.idle();
+    timers.advance(600_000);
+    await c.idle();
+    expect(labelOf("w1:p1")).toBe("Research · done");
+    expect(panes.closes()).toEqual([]);
+    expect(timers.count).toBe(0);
+    start(A); // resumed later: back to working
+    await c.idle();
+    expect(labelOf("w1:p1")).toBe("Research · working (run 2)");
+  });
+
+  test("with autoClose off, the pane cap still evicts the oldest idle pane", async () => {
+    const { c, panes, spawn, start, stop } = setup({ autoClose: false, maxPanes: 1 });
+    start(ROOT);
+    spawn(A, ROOT, "Research: a");
+    start(A);
+    stop(A);
+    spawn(B, ROOT, "Docs: b");
+    await c.idle();
+    expect(panes.closes()).toEqual([["close", "w1:p1"]]);
+  });
+
   test("a sibling still working keeps an idle child open even when the parent is idle", async () => {
     // Orchestrators end their turn after launching background subagents.
     const { c, timers, panes, spawn, start, stop, labelOf } = setup();
