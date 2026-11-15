@@ -1,7 +1,8 @@
 // Compact "card" for one subagent, shown in its herdr pane. Zoom is the toggle:
-// click the card, press Enter, or zoom the pane (herdr prefix+z, default
-// ctrl+b z) to expand into the full opencode view; un-zoom (ctrl+b z again) or
-// quit the full view (ctrl+c) to come back to the card. While expanded, a
+// zoom the pane (herdr prefix+z, default ctrl+b z) or press Enter to expand into
+// the full opencode view; un-zoom (ctrl+b z again) or quit the full view
+// (ctrl+c) to come back to the card. The card doesn't capture the mouse, so
+// clicking a card pane just focuses it as usual. While expanded, a
 // marker file next to the state file tells the plugin not to close the pane.
 //
 // Run by the plugin as: BUN_BE_BUN=1 opencode card.js --state <file> --session <id>
@@ -78,7 +79,7 @@ export function renderCard(state, { cols, rows, now = Date.now() }) {
   push(` ${icon} ${state.status}${elapsed ? `  ·  ${elapsed}` : ""}`.slice(0, cols), style);
   push();
 
-  const footer = " ⏎ / click / ctrl+b z: expand   ·   ctrl+b z again to return";
+  const footer = " ctrl+b z: expand / return   ·   ⏎ also expands";
   const budget = Math.max(0, rows - lines.length - 2); // keep a blank line + footer
 
   const body = [];
@@ -141,8 +142,6 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
   const pane = process.env.HERDR_PANE_ID;
-  const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`;
-  const MOUSE_OFF = `${ESC}?1000l${ESC}?1006l`;
   let expanded = false;
   let lastFrame = "";
 
@@ -155,14 +154,14 @@ async function main() {
   }
 
   function enterCardMode() {
-    stdout.write(`${ESC}?25l${MOUSE_ON}`);
+    stdout.write(`${ESC}?25l`);
     if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
     draw(true);
   }
 
   function leaveCardMode() {
-    stdout.write(`${MOUSE_OFF}${ESC}?25h${ESC}H${ESC}2J`);
+    stdout.write(`${ESC}?25h${ESC}H${ESC}2J`);
     if (stdin.isTTY) stdin.setRawMode(false);
     stdin.pause();
   }
@@ -219,12 +218,11 @@ async function main() {
       leaveCardMode();
       process.exit(0);
     }
-    // Enter, or a left-button press (SGR mouse: ESC [ < 0 ; x ; y M)
-    if (s === "\r" || s === "\n" || /\x1b\[<0;\d+;\d+M/.test(s)) expand();
+    if (s === "\r" || s === "\n") expand();
   });
   stdout.on("resize", () => draw(true));
   process.on("exit", () => {
-    stdout.write(`${MOUSE_OFF}${ESC}?25h`);
+    stdout.write(`${ESC}?25h`);
     try {
       fs.rmSync(marker, { force: true });
     } catch {}

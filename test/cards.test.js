@@ -113,7 +113,8 @@ describe("renderCard", () => {
     expect(lines.join("\n")).toContain("← Driver says: implemented words()");
     expect(lines.join("\n")).toContain("⚙ read wordfreq.js");
     expect(lines.join("\n")).toContain("--top 0 should be rejected."); // markdown stripped
-    expect(lines.at(-1)).toContain("ctrl+b z again to return");
+    expect(lines.at(-1)).toContain("ctrl+b z: expand / return");
+    expect(lines.at(-1)).not.toContain("click");
     expect(lines.length).toBe(14);
   });
 

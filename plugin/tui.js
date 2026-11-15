@@ -1,6 +1,7 @@
 // opencode v2 client plugin: shows a herdr pane per subagent of the session in
 // this TUI. Each pane is a compact card (status, latest message, current tool,
-// latest text); click or Enter zooms it into the full opencode view.
+// latest text); zooming the pane (ctrl+b z) or Enter expands it into the full
+// opencode view.
 //
 // Install: add this directory to the "plugins" array in ~/.config/opencode/cli.json.
 import fs from "node:fs";

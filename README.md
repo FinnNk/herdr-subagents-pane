@@ -12,10 +12,10 @@ subagent, so you can watch it work next to the main agent.
 - **Cards:** each pane shows a compact card instead of the full transcript: title, status and
   elapsed time, the latest message the subagent received and who sent it (`← orchestrator: …`,
   `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
-  **Zoom is the toggle.** Click the card, press Enter, or zoom the pane (herdr's `prefix+z`,
-  default `ctrl+b z`) to expand it: the pane fills the tab with the full opencode view of that
+  **Zoom is the toggle.** Zoom the pane as usual (herdr's `prefix+z`, default `ctrl+b z`), or
+  press Enter in it, to expand it: the pane fills the tab with the full opencode view of that
   subagent. **Press `ctrl+b z` again** (or quit the full view with ctrl+c) to return to the card
-  and the layout. An expanded pane is never closed automatically; its countdown restarts until
+  and the layout. Cards don't capture the mouse, so clicking one just focuses the pane. An expanded pane is never closed automatically; its countdown restarts until
   you collapse it.
 - **Summary strip:** a full-width strip along the bottom of the tab shows the agent tree, with an
   indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
@@ -91,7 +91,7 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/controller.js`: a pure state machine (open, debounce, close) with no opencode or herdr imports.
 - `plugin/cards.js`: builds each card's state from events (pure; writes JSON to `$XDG_RUNTIME_DIR`).
 - `plugin/card.js`: the card renderer that runs in each pane (via opencode's embedded Bun), with
-  click/Enter to expand into the full view using `herdr pane zoom`.
+  zoom/Enter to expand into the full view using `herdr pane zoom`.
 - `plugin/summary.js`: the summary store (fed by events in the parent TUI) and the strip renderer.
 - `plugin/herdr.js`: a thin adapter over the `herdr` CLI (`pane split/run/rename/get/close`).
 
