@@ -577,6 +577,69 @@ describe("layout and capacity", () => {
   });
 });
 
+describe("overflow tab", () => {
+  test("past the cap, viewers go to an overflow tab as a two-row grid instead of evicting", async () => {
+    const { c, panes, spawn, start } = setup({ maxPanes: 2, overflow: "tab" });
+    for (const id of ["s1", "s2", "s3", "s4", "s5", "s6"]) {
+      spawn(id, ROOT, `T${id}: ${id}`);
+      start(id);
+    }
+    await c.idle();
+    expect(panes.closes()).toEqual([]);
+    const ov = panes.anchors.slice(2).map(([id, , a]) => [id, a]);
+    expect(ov).toEqual([
+      ["s3", { area: "overflow" }], // becomes the new tab's pane (w1:p3)
+      ["s4", { area: "overflow", paneId: "w1:p3", direction: "down" }], // starts the bottom row
+      ["s5", { area: "overflow", paneId: "w1:p3", direction: "right", ratio: 0.5 }], // top row
+      ["s6", { area: "overflow", paneId: "w1:p4", direction: "right", ratio: 0.5 }], // bottom row
+    ]);
+  });
+
+  test("when the overflow tab is full too, the oldest idle viewer makes room in its own area", async () => {
+    const { c, panes, spawn, start, stop } = setup({ maxPanes: 1, overflow: "tab", overflowMaxPanes: 1 });
+    start(ROOT);
+    spawn(A, ROOT, "Research: a");
+    start(A);
+    spawn(B, ROOT, "Docs: b");
+    start(B);
+    await c.idle();
+    stop(B); // the overflow viewer goes idle
+    spawn("ses_c", ROOT, "Tests: c");
+    start("ses_c");
+    await c.idle();
+    expect(panes.closes()).toEqual([["close", "w1:p2"]]);
+    expect(panes.anchors.at(-1)).toEqual(["ses_c", "w1:p3", { area: "overflow" }]);
+  });
+
+  test("the default still evicts", async () => {
+    const { c, panes, spawn, start, stop } = setup({ maxPanes: 1 });
+    start(ROOT);
+    spawn(A);
+    start(A);
+    stop(A);
+    spawn(B);
+    await c.idle();
+    expect(panes.closes()).toEqual([["close", "w1:p1"]]);
+  });
+});
+
+describe("rebalancing", () => {
+  test("after panes open or close, rebalance gets the open viewer panes (coalesced)", async () => {
+    const calls = [];
+    const timers = fakeTimers();
+    const panes = { ...fakePanes(), rebalance: async (ids) => calls.push(ids) };
+    const c = createController({ panes, timers, settleMs: 0, closeDelayMs: 1_000 });
+    c.setRoute(ROOT);
+    c.handle("session.created", { sessionID: A, parentID: ROOT, title: "Research: a" });
+    c.handle("session.created", { sessionID: B, parentID: ROOT, title: "Docs: b" });
+    await c.idle();
+    expect(calls).toEqual([["w1:p1", "w1:p2"]]);
+    timers.advance(1_000);
+    await c.idle();
+    expect(calls.at(-1)).toEqual([]);
+  });
+});
+
 describe("open delay", () => {
   const D = 10_000;
 

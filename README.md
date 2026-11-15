@@ -13,6 +13,9 @@ subagent, so you can watch it work next to the main agent.
   A description without a colon gets a column of its own. Columns are always full height: if every
   column is already stacked, the plugin briefly closes and reopens the cards below the top one so it
   can split the new column off at full height (a column with an expanded view is left alone).
+  Columns share the width evenly and stacked cards share their column's height evenly; sizes are
+  rebalanced whenever a pane opens or closes (your manual resizes last until the next change, and
+  nothing is resized while a view is expanded). Other panes in the tab, like a sidebar, keep their size.
 - **Cards:** each pane shows a compact card instead of the full transcript: title, status and
   elapsed time, the latest message the subagent received and who sent it (`← orchestrator: …`,
   `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
@@ -44,7 +47,9 @@ subagent, so you can watch it work next to the main agent.
   and every subagent appears in the strip with its tokens so far. Active time before the TUI
   attached isn't known, so it counts from then.
 - At the pane limit, the oldest idle viewer is closed to make room for a new subagent. If every
-  viewer is busy, the new subagent doesn't get a pane.
+  viewer is busy, the new subagent doesn't get a pane. With `"overflow": "tab"`, extra subagents
+  go to a separate `subagents` tab instead (opened without taking focus, laid out as a two-row
+  grid, closed with its last pane); only when that is full too is an idle viewer closed.
 - Panes are closed when the subagent session is deleted, when you switch the TUI to an unrelated
   session, or when the TUI exits. Each pane also watches the TUI process that opened it and closes
   itself if that process is gone, so a crash or a quick exit doesn't leave panes behind.
@@ -80,6 +85,8 @@ Every key is optional; these are the defaults:
   "closeDelaySeconds": 20,
   "settleSeconds": 3,
   "maxPanes": 4,
+  "overflow": "evict",
+  "overflowMaxPanes": 6,
   "summary": true,
   "debugLog": null,
   "excludeAgents": [],
@@ -94,7 +101,9 @@ Every key is optional; these are the defaults:
 | `openDelaySeconds` | `HERDR_SUBAGENTS_OPEN_DELAY_MS` (ms) | How long a subagent must keep working before its pane opens. `0` opens panes immediately |
 | `closeDelaySeconds` | `HERDR_SUBAGENTS_CLOSE_DELAY_MS` (ms) | Countdown before an idle subagent's pane closes |
 | `settleSeconds` | `HERDR_SUBAGENTS_SETTLE_MS` (ms) | How long the workflow must stay quiet before countdowns start |
-| `maxPanes` | `HERDR_SUBAGENTS_MAX_PANES` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
+| `maxPanes` | `HERDR_SUBAGENTS_MAX_PANES` | Maximum viewer panes in the main tab |
+| `overflow` | `HERDR_SUBAGENTS_OVERFLOW` (`evict`/`tab`) | At the pane limit: close the oldest idle viewer (`evict`), or open extra viewers in an overflow tab (`tab`) |
+| `overflowMaxPanes` | `HERDR_SUBAGENTS_OVERFLOW_MAX_PANES` | Maximum viewers in the overflow tab |
 | `summary` | `HERDR_SUBAGENTS_SUMMARY` (`1`/`0`) | Show the summary strip |
 | `debugLog` | `HERDR_SUBAGENTS_DEBUG` | Path of a file to append debug logs to |
 | `excludeAgents` | | Agent names whose subagents get no pane, e.g. `["explore"]` |
@@ -140,7 +149,10 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/card.js`: the card renderer that runs in each pane (via opencode's embedded Bun), with
   zoom/Enter to expand into the full view using `herdr pane zoom`.
 - `plugin/summary.js`: the summary store (fed by events in the parent TUI) and the strip renderer.
-- `plugin/herdr.js`: a thin adapter over the `herdr` CLI (`pane split/run/rename/get/close`).
+- `plugin/herdr.js`: a thin adapter over the `herdr` CLI (panes, the overflow tab, resizing).
+- `plugin/layout.js`: works out the resizes that even out column widths and card heights (pure).
+- `plugin/config.js`: settings from the config file and environment (pure).
+- `plugin/watchdog.js`: closes a viewer pane if the TUI that opened it is gone.
 
 Viewer panes are started with `HERDR_SUBAGENTS_PANE_VIEWER=1` so the plugin does not run inside them.
 If the parent TUI uses `--server <url>`, the viewer uses the same URL, and `OPENCODE_SERVER_PASSWORD`

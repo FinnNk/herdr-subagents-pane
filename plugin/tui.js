@@ -121,6 +121,7 @@ function setup(api) {
     parentPaneId: process.env.HERDR_PANE_ID,
     cwd: process.cwd(),
     env,
+    log,
     viewerCommand: (childId) =>
       cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server, owner: process.pid }),
   });
@@ -162,6 +163,8 @@ function setup(api) {
     exclude: makeExclude(config, (id) => api.data.session.get(id)?.agent),
     closeDelayMs: config.closeDelayMs,
     maxPanes: config.maxPanes,
+    overflow: config.overflow,
+    overflowMaxPanes: config.overflowMaxPanes,
     settleMs: config.settleMs,
     log,
   });
