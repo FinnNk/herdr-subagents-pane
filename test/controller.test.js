@@ -474,6 +474,41 @@ describe("layout and capacity", () => {
     expect(panes.anchors[3][2]).toEqual({ paneId: "w1:p1", direction: "right", ratio: 0.5 });
   });
 
+  test("when every column is stacked, the rightmost is collapsed, split, and restacked", async () => {
+    // The cipher demo: three codebreakers stack in one column, then the solvers need a new one.
+    const { c, panes, spawn, labelOf } = setup({ maxPanes: 6 });
+    spawn("ses_c", ROOT, "Caesar: codebreaking");
+    spawn("ses_a", ROOT, "Atbash: codebreaking");
+    spawn("ses_v", ROOT, "Vigenere: codebreaking");
+    await c.idle();
+    spawn("ses_f", ROOT, "Formula: answer");
+    await c.idle();
+    expect(panes.calls.filter((x) => x[0] !== "rename").slice(3)).toEqual([
+      ["close", "w1:p2"], // Atbash and Vigenere close…
+      ["close", "w1:p3"],
+      ["open", "ses_f", "w1:p1", "right"], // …so splitting Caesar's pane is full height…
+      ["open", "ses_a", "w1:p1", "down"], // …and they come back under Caesar, in order
+      ["open", "ses_v", "w1:p5", "down"],
+    ]);
+    expect(labelOf("w1:p5")).toBe("Atbash: codebreaking · starting");
+    // The answer column then stacks normally under Formula.
+    spawn("ses_s", ROOT, "Simulation: answer");
+    await c.idle();
+    expect(panes.anchors.at(-1)).toEqual(["ses_s", "w1:p7", { paneId: "w1:p4", direction: "down" }]);
+    expect(c.snapshot().map((s) => s.paneId).sort()).toEqual(["w1:p1", "w1:p4", "w1:p5", "w1:p6", "w1:p7"]);
+  });
+
+  test("a stacked column with an expanded view is not collapsed", async () => {
+    const { c, panes, spawn } = setup({ isPinned: (id) => id === "ses_a" });
+    spawn("ses_c", ROOT, "Caesar: codebreaking");
+    spawn("ses_a", ROOT, "Atbash: codebreaking");
+    await c.idle();
+    spawn("ses_f", ROOT, "Formula: answer");
+    await c.idle();
+    expect(panes.closes()).toEqual([]);
+    expect(panes.anchors.at(-1)[2]).toEqual({ paneId: "w1:p1", direction: "right", ratio: 0.5 });
+  });
+
   test("a reopened viewer goes back into its task's column", async () => {
     const NAV = "ses_nav", DRV = "ses_drv";
     const { c, panes, spawn, start } = setup();

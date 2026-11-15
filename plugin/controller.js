@@ -15,7 +15,10 @@
 // - Layout: the orchestrator keeps the left third; each task gets a column.
 //   Subagents titled "<Role>: <Task>" with the same task share a column
 //   (e.g. "Driver: implementation" and "Navigator: implementation" stack in
-//   one column). A title without a colon gets a column of its own.
+//   one column). A title without a colon gets a column of its own. herdr only
+//   splits single panes, so when every column is stacked, the rightmost one is
+//   collapsed to its top pane, split, and its other panes reopened below (cards
+//   hold no state of their own, so reopening them is invisible).
 // - Labels carry status: "· working (run 2)", "· waiting", "· needs input",
 //   "· done, closing in 30s".
 
@@ -196,7 +199,11 @@ export function createController({
     return cols.sort((a, b) => a.members[0].openedSeq - b.members[0].openedSeq);
   }
 
-  /** Where a new viewer goes: its task's column, else a new column on the right. */
+  /**
+   * Where a new viewer goes: its task's column, else a new column on the right.
+   * `restack` names a column whose lower panes must be closed first (and reopened
+   * after) so the new column can be split off its top pane at full height.
+   */
   function placement(c) {
     const key = taskKey(c.title, c.id);
     const cols = columns(c);
@@ -206,7 +213,13 @@ export function createController({
     // herdr splits single panes, so a full-height column needs a single-pane column to split.
     const single = [...cols].reverse().find((col) => col.members.length === 1);
     const from = (single ?? cols.at(-1)).members[0];
-    return { key, anchor: { paneId: from.paneId, direction: "right", ratio: 0.5 } };
+    const anchor = { paneId: from.paneId, direction: "right", ratio: 0.5 };
+    if (single) return { key, anchor };
+    // Every column is stacked: temporarily collapse the rightmost one to its top
+    // pane, unless one of its panes is expanded (closing it would kill the view).
+    const lower = cols.at(-1).members.slice(1);
+    if (lower.some((m) => isPinned(m.id))) return { key, anchor };
+    return { key, anchor, restack: lower };
   }
 
   /** Oldest idle viewer whose parent is idle too, or failing that any idle viewer. */
@@ -240,12 +253,28 @@ export function createController({
         }
         await closePane(victim, "evicted for a newer subagent");
       }
-      const { key, anchor } = placement(c);
+      const { key, anchor, restack = [] } = placement(c);
+      // Collapse the column to its top pane so the split below spans its full height.
+      for (const m of restack) {
+        const paneId = m.paneId;
+        m.paneId = undefined;
+        m.shownLabel = undefined;
+        await panes.close(paneId);
+      }
       c.column = key;
       c.shownLabel = label(c);
       c.paneId = await panes.open(c.id, anchor, c.shownLabel);
       c.openedSeq = ++openSeq;
       log("opened viewer", { child: c.id, pane: c.paneId, anchor });
+      // Put the collapsed panes back under the column's top pane, in their order.
+      let below = anchor.paneId;
+      for (const m of restack) {
+        m.shownLabel = label(m);
+        m.paneId = below ? await panes.open(m.id, { paneId: below, direction: "down" }, m.shownLabel) : undefined;
+        if (m.paneId) below = m.paneId;
+        if (m.closeTimer !== undefined && !m.paneId) cancelClose(m);
+      }
+      if (restack.length) log("restacked column", { panes: restack.map((m) => m.paneId) });
       // State may have moved on while the split was in flight.
       if (c.paneId && settled && closable(c)) scheduleClose(c);
     });
