@@ -1,14 +1,19 @@
-// opencode v2 client plugin: opens a herdr pane for each subagent of the
-// session shown in this TUI, and closes it (debounced) once the subagent idles.
+// opencode v2 client plugin: shows a herdr pane per subagent of the session in
+// this TUI. Each pane is a compact card (status, latest message, current tool,
+// latest text); click or Enter zooms it into the full opencode view.
 //
 // Install: add this directory to the "plugins" array in ~/.config/opencode/cli.json.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createController, DEFAULT_CLOSE_DELAY_MS, DEFAULT_MAX_PANES, DEFAULT_SETTLE_MS } from "./controller.js";
+import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 
 const VIEWER_ENV = "HERDR_SUBAGENTS_PANE_VIEWER";
 const ROUTE_POLL_MS = 500;
+const CARD_SCRIPT = fileURLToPath(new URL("./card.js", import.meta.url));
 
 function intFromEnv(name, fallback) {
   const n = Number.parseInt(process.env[name] ?? "", 10);
@@ -40,6 +45,21 @@ function makeLogger() {
   };
 }
 
+/** Shell command that runs the card for one subagent (falls back to the full view). */
+export function cardCommand({ bin, cardScript, stateFile, childId, server }) {
+  const q = shellQuote;
+  const serverArgs = server ? ["--server", q(server)] : [];
+  return [
+    "exec env BUN_BE_BUN=1",
+    q(bin),
+    q(cardScript),
+    "--state", q(stateFile),
+    "--session", q(childId),
+    "--bin", q(bin),
+    ...serverArgs,
+  ].join(" ");
+}
+
 function setup(api) {
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID || !process.env.HERDR_SOCKET_PATH) return;
   // Viewer panes run this same plugin; they must not open panes of their own.
@@ -51,18 +71,35 @@ function setup(api) {
   const env = { [VIEWER_ENV]: "1" };
   if (process.env.OPENCODE_SERVER_PASSWORD) env.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD;
 
-  const panes = createHerdrPanes({
+  // Card state lives in a private runtime dir, one JSON file per subagent.
+  const cardDir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "herdr-subagents-pane", String(process.pid));
+  fs.mkdirSync(cardDir, { recursive: true, mode: 0o700 });
+  const stateFile = (id) => path.join(cardDir, `${id}.json`);
+  const cards = createCardStore({
+    write(id, card) {
+      try {
+        const tmp = `${stateFile(id)}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(card));
+        fs.renameSync(tmp, stateFile(id));
+      } catch (err) {
+        log("card write failed", { err: String(err) });
+      }
+    },
+  });
+
+  const herdrPanes = createHerdrPanes({
     parentPaneId: process.env.HERDR_PANE_ID,
     cwd: process.cwd(),
     env,
     viewerCommand: (childId) =>
-      ["exec", shellQuote(bin), ...(server ? ["--server", shellQuote(server)] : []), "--session", shellQuote(childId)].join(" "),
+      cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server }),
   });
 
   const controller = createController({
-    panes,
+    panes: herdrPanes,
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
+    onStatus: (id, info) => cards.status(id, info),
     closeDelayMs: intFromEnv("HERDR_SUBAGENTS_CLOSE_DELAY_MS", DEFAULT_CLOSE_DELAY_MS),
     maxPanes: intFromEnv("HERDR_SUBAGENTS_MAX_PANES", DEFAULT_MAX_PANES),
     settleMs: intFromEnv("HERDR_SUBAGENTS_SETTLE_MS", DEFAULT_SETTLE_MS),
@@ -78,16 +115,21 @@ function setup(api) {
     if (!details?.type) return;
     syncRoute(); // route can change without an event of its own
     controller.handle(details.type, details.data);
+    const id = details.data?.sessionID;
+    if (id && controller.isTracked(id)) cards.handle(details.type, details.data);
   });
   syncRoute();
   const poll = setInterval(syncRoute, ROUTE_POLL_MS);
   poll.unref?.();
-  log("setup", { pane: process.env.HERDR_PANE_ID, server: server ?? "(service)" });
+  log("setup", { pane: process.env.HERDR_PANE_ID, server: server ?? "(service)", cardDir });
 
   return () => {
     clearInterval(poll);
     unsubscribe();
-    controller.dispose();
+    controller.dispose().finally(() => {
+      cards.dispose();
+      fs.rmSync(cardDir, { recursive: true, force: true });
+    });
   };
 }
 

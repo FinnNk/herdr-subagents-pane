@@ -9,6 +9,11 @@ subagent, so you can watch it work next to the main agent.
   the description) and subagents with the same task share a column, e.g. `Driver: implementation`
   and `Navigator: implementation` stack in one column while `Research: word splitting` gets its own.
   A description without a colon gets a column of its own.
+- **Cards:** each pane shows a compact card instead of the full transcript: title, status and
+  elapsed time, the latest message the subagent received (e.g. `← Driver says: …`, which makes
+  relayed pairing visible), the current tool, and the tail of its latest output.
+  **Click the card or press Enter** to expand it: herdr zooms the pane to the full tab and the full
+  opencode view of that subagent opens. Quit it (ctrl+c) to return to the card and the layout.
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
   `· working (round 2)` when the parent resumes it, `· waiting`, `· needs input`, or
   `· done, closing in 20s`.
@@ -49,6 +54,9 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 
 - `plugin/tui.js`: the v2 entrypoint. Subscribes to `api.data.listen` and polls the TUI route.
 - `plugin/controller.js`: a pure state machine (open, debounce, close) with no opencode or herdr imports.
+- `plugin/cards.js`: builds each card's state from events (pure; writes JSON to `$XDG_RUNTIME_DIR`).
+- `plugin/card.js`: the card renderer that runs in each pane (via opencode's embedded Bun), with
+  click/Enter to expand into the full view using `herdr pane zoom`.
 - `plugin/herdr.js`: a thin adapter over the `herdr` CLI (`pane split/run/rename/get/close`).
 
 Viewer panes are started with `HERDR_SUBAGENTS_PANE_VIEWER=1` so the plugin does not run inside them.

@@ -49,12 +49,15 @@ const STOP_EVENTS = new Set([
  * @param {number} [opts.settleMs] how long the tree must stay quiet before countdowns start
  * @param {number} [opts.maxPanes] cap on simultaneously open viewer panes
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
+ * @param {(id: string, info: {title?: string, status: string, rounds: number}) => void} [opts.onStatus]
+ *        called whenever a subagent's status may have changed (e.g. to update a card)
  * @param {(msg: string, extra?: object) => void} [opts.log]
  */
 export function createController({
   panes,
   lookupParent = () => undefined,
   lookupRunning = () => undefined,
+  onStatus = () => {},
   closeDelayMs = DEFAULT_CLOSE_DELAY_MS,
   settleMs = DEFAULT_SETTLE_MS,
   maxPanes = DEFAULT_MAX_PANES,
@@ -154,6 +157,11 @@ export function createController({
 
   /** Push the current label to the pane if it changed. */
   function refreshLabel(c) {
+    try {
+      onStatus(c.id, { title: c.title, status: status(c), rounds: c.rounds });
+    } catch (err) {
+      log("onStatus failed", { err: String(err) });
+    }
     if (!panes.rename) return;
     enqueue(async () => {
       if (!c.paneId) return;
@@ -402,6 +410,11 @@ export function createController({
         last = queue;
         await last;
       }
+    },
+
+    /** Is this session one of the subagents this controller tracks? */
+    isTracked(id) {
+      return children.has(id);
     },
 
     get root() {
