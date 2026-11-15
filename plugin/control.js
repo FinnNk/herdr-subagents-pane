@@ -48,15 +48,36 @@ export function takeCommands(dir) {
   return out;
 }
 
-/** Running instances: [{ dir, pid, pane, tab, startedAt }]. */
-export function listInstances(root = runtimeRoot(), isAlive = (pid) => {
+/**
+ * Remove runtime dirs of instances whose process is gone (opencode can exit
+ * before the plugin's own cleanup runs). Dirs are named after the pid.
+ */
+export function sweepStale(root = runtimeRoot(), isAlive = defaultIsAlive) {
+  let removed = 0;
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(root);
+  } catch {}
+  for (const d of dirs) {
+    const pid = Number(d);
+    if (!Number.isInteger(pid) || pid <= 0 || isAlive(pid)) continue;
+    fs.rmSync(path.join(root, d), { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
+function defaultIsAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
     return err?.code === "EPERM";
   }
-}) {
+}
+
+/** Running instances: [{ dir, pid, pane, tab, startedAt }]. */
+export function listInstances(root = runtimeRoot(), isAlive = defaultIsAlive) {
   let dirs;
   try {
     dirs = fs.readdirSync(root);

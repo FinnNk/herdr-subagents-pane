@@ -13,7 +13,7 @@ import { loadConfig, makeExclude } from "./config.js";
 import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 import { createSummaryStore } from "./summary.js";
-import { takeCommands } from "./control.js";
+import { runtimeRoot, sweepStale, takeCommands } from "./control.js";
 
 const VIEWER_ENV = "HERDR_SUBAGENTS_PANE_VIEWER";
 const ROUTE_POLL_MS = 500;
@@ -97,6 +97,10 @@ function setup(api) {
   if (process.env.OPENCODE_SERVER_PASSWORD) env.OPENCODE_SERVER_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD;
 
   // Card state lives in a private runtime dir, one JSON file per subagent.
+  // Dirs left behind by TUIs that exited before cleaning up are removed first.
+  try {
+    sweepStale(runtimeRoot());
+  } catch {}
   const cardDir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "herdr-subagents-pane", String(process.pid));
   fs.mkdirSync(cardDir, { recursive: true, mode: 0o700 });
   const stateFile = (id) => path.join(cardDir, `${id}.json`);

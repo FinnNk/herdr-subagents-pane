@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listInstances, pickInstance, takeCommands, writeCommand } from "../plugin/control.js";
+import { listInstances, pickInstance, sweepStale, takeCommands, writeCommand } from "../plugin/control.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hsp-control-"));
 
@@ -27,6 +27,13 @@ describe("instances", () => {
     }
     fs.mkdirSync(path.join(root, "junk"));
     expect(listInstances(root, (pid) => pid === 22).map((i) => i.pid)).toEqual([22]);
+  });
+
+  test("sweepStale removes dirs of dead pids only", () => {
+    const root = tmp();
+    for (const d of ["101", "202", "notapid"]) fs.mkdirSync(path.join(root, d));
+    expect(sweepStale(root, (pid) => pid === 202)).toBe(1);
+    expect(fs.readdirSync(root).sort()).toEqual(["202", "notapid"]);
   });
 
   test("picks the instance for the focused pane, then the focused tab, then the newest", () => {
