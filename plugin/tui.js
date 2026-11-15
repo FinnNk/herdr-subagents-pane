@@ -4,7 +4,7 @@
 // Install: add this directory to the "plugins" array in ~/.config/opencode/cli.json.
 import fs from "node:fs";
 import path from "node:path";
-import { createController, DEFAULT_CLOSE_DELAY_MS, DEFAULT_MAX_PANES } from "./controller.js";
+import { createController, DEFAULT_CLOSE_DELAY_MS, DEFAULT_MAX_PANES, DEFAULT_SETTLE_MS } from "./controller.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 
 const VIEWER_ENV = "HERDR_SUBAGENTS_PANE_VIEWER";
@@ -62,8 +62,10 @@ function setup(api) {
   const controller = createController({
     panes,
     lookupParent: (id) => api.data.session.get(id)?.parentID,
+    lookupRunning: (id) => api.data.session.status(id) === "running",
     closeDelayMs: intFromEnv("HERDR_SUBAGENTS_CLOSE_DELAY_MS", DEFAULT_CLOSE_DELAY_MS),
     maxPanes: intFromEnv("HERDR_SUBAGENTS_MAX_PANES", DEFAULT_MAX_PANES),
+    settleMs: intFromEnv("HERDR_SUBAGENTS_SETTLE_MS", DEFAULT_SETTLE_MS),
     log,
   });
 

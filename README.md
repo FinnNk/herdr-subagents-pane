@@ -4,11 +4,20 @@ An [opencode](https://opencode.ai) v2 plugin that opens a [herdr](https://herdr.
 subagent, so you can watch it work next to the main agent.
 
 - When the session in your opencode TUI spawns a subagent, a viewer pane opens to the right
-  (later subagents stack below it) running `opencode --session <child>`.
-- When the subagent goes idle, its pane closes after a **debounce** (default 20 s). Any new work
-  in that window (the parent resuming the same subagent, a permission prompt, a question) cancels
-  the close, so a subagent that is resumed keeps its pane instead of flickering.
+  running `opencode --session <child>`. Later subagents stack below the most recently opened
+  viewer, so the column reads top to bottom in the order things happened.
+- Each pane's label shows the subagent's title and status: `· starting`, `· working`,
+  `· working (round 2)` when the parent resumes it, `· waiting`, `· needs input`, or
+  `· done, closing in 20s`.
+- **Debounced close once the workflow is quiet:** countdowns (default 20s) start only when nothing
+  under the main session (the main session included) is running or waiting for input, and has
+  stayed that way for a short settling period (default 3s). Orchestrators end their turn after
+  launching background subagents and are woken by the results, so a subagent's parent being idle
+  doesn't mean the workflow is done. Idle panes read `· waiting` until then, so a
+  driver/navigator pair stays visible for the whole loop. Any new activity cancels pending closes.
 - A pending permission or question keeps the pane open until it is answered.
+- At the pane limit, the oldest idle viewer is closed to make room for a new subagent. If every
+  viewer is busy, the new subagent doesn't get a pane.
 - Panes are closed when the subagent session is deleted, when you switch the TUI to an unrelated
   session, or when the TUI exits.
 
@@ -29,7 +38,8 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HERDR_SUBAGENTS_CLOSE_DELAY_MS` | `20000` | Debounce before closing an idle subagent's pane |
-| `HERDR_SUBAGENTS_MAX_PANES` | `4` | Maximum viewer panes open at once |
+| `HERDR_SUBAGENTS_SETTLE_MS` | `3000` | How long the workflow must stay quiet before countdowns start |
+| `HERDR_SUBAGENTS_MAX_PANES` | `4` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
 | `HERDR_SUBAGENTS_DEBUG` | unset | Path of a file to append debug logs to |
 
 ## How it works
