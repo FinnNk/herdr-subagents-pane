@@ -51,6 +51,8 @@ const STOP_EVENTS = new Set([
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
  * @param {(id: string, info: {title?: string, status: string, rounds: number}) => void} [opts.onStatus]
  *        called whenever a subagent's status may have changed (e.g. to update a card)
+ * @param {(id: string) => boolean} [opts.isPinned] true while the user has a subagent's view
+ *        expanded; its pane is never auto-closed, the countdown just restarts
  * @param {(msg: string, extra?: object) => void} [opts.log]
  */
 export function createController({
@@ -58,6 +60,7 @@ export function createController({
   lookupParent = () => undefined,
   lookupRunning = () => undefined,
   onStatus = () => {},
+  isPinned = () => false,
   closeDelayMs = DEFAULT_CLOSE_DELAY_MS,
   settleMs = DEFAULT_SETTLE_MS,
   maxPanes = DEFAULT_MAX_PANES,
@@ -267,6 +270,10 @@ export function createController({
     c.closeTimer = timers.setTimeout(() => {
       c.closeTimer = undefined;
       if (disposed || !closable(c)) return refreshLabel(c); // re-check at fire time
+      if (isPinned(c.id)) {
+        log("close postponed: view expanded", { child: c.id });
+        return scheduleClose(c);
+      }
       enqueue(() => closePane(c, "idle"));
     }, closeDelayMs);
     refreshLabel(c);

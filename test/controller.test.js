@@ -414,6 +414,26 @@ describe("tree-quiet closing", () => {
   });
 });
 
+describe("expanded views", () => {
+  test("a pane whose view is expanded is not closed; the countdown restarts", async () => {
+    let pinned = true;
+    const { c, timers, panes, spawn, start, stop } = setup({ isPinned: () => pinned });
+    spawn(A);
+    start(A);
+    stop(A);
+    await c.idle();
+    timers.advance(20_000);
+    await c.idle();
+    timers.advance(20_000);
+    await c.idle();
+    expect(panes.open_.size).toBe(1);
+    pinned = false; // user collapsed it
+    timers.advance(20_000);
+    await c.idle();
+    expect(panes.open_.size).toBe(0);
+  });
+});
+
 describe("layout and capacity", () => {
   test("taskKey groups '<Role>: <Task>' titles by task", () => {
     expect(taskKey("Driver: implementation", "x")).toBe("implementation");

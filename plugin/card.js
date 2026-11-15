@@ -1,6 +1,8 @@
-// Compact "card" for one subagent, shown in its herdr pane. Click it or press
-// Enter to expand: herdr zooms the pane to the full tab and the full opencode
-// view of the subagent opens; quit that view (ctrl+c) to come back to the card.
+// Compact "card" for one subagent, shown in its herdr pane. Zoom is the toggle:
+// click the card, press Enter, or zoom the pane (herdr prefix+z, default
+// ctrl+b z) to expand into the full opencode view; un-zoom (ctrl+b z again) or
+// quit the full view (ctrl+c) to come back to the card. While expanded, a
+// marker file next to the state file tells the plugin not to close the pane.
 //
 // Run by the plugin as: BUN_BE_BUN=1 opencode card.js --state <file> --session <id>
 //                       [--server <url>] [--bin <opencode binary>]
@@ -76,7 +78,7 @@ export function renderCard(state, { cols, rows, now = Date.now() }) {
   push(` ${icon} ${state.status}${elapsed ? `  ·  ${elapsed}` : ""}`.slice(0, cols), style);
   push();
 
-  const footer = " ⏎ / click: expand   (ctrl+c in full view to return)";
+  const footer = " ⏎ / click / ctrl+b z: expand   ·   ctrl+b z again to return";
   const budget = Math.max(0, rows - lines.length - 2); // keep a blank line + footer
 
   const body = [];
@@ -117,7 +119,22 @@ function readState(file) {
 }
 
 function herdr(args) {
-  return new Promise((resolve) => execFile("herdr", args, { timeout: 5_000 }, () => resolve()));
+  return new Promise((resolve) =>
+    execFile("herdr", args, { timeout: 5_000 }, (err, stdout) => {
+      try {
+        resolve(err ? undefined : JSON.parse(stdout));
+      } catch {
+        resolve(undefined);
+      }
+    }),
+  );
+}
+
+/** Is this pane the zoomed one? (Zooming a pane focuses it.) */
+async function zoomedSelf(pane) {
+  const layout = (await herdr(["pane", "layout", "--pane", pane]))?.result?.layout;
+  if (!layout) return undefined; // unknown: don't act on it
+  return layout.zoomed === true && layout.focused_pane_id === pane;
 }
 
 async function main() {
@@ -150,23 +167,50 @@ async function main() {
     stdin.pause();
   }
 
-  async function expand() {
+  const marker = `${args.state}.expanded`;
+  let child;
+
+  async function expand({ alreadyZoomed = false } = {}) {
     if (expanded) return;
     expanded = true;
+    try {
+      fs.writeFileSync(marker, String(Date.now()));
+    } catch {}
     leaveCardMode();
-    if (pane) await herdr(["pane", "zoom", pane, "--on"]);
+    if (pane && !alreadyZoomed) await herdr(["pane", "zoom", pane, "--on"]);
     const env = { ...process.env, HERDR_SUBAGENTS_PANE_VIEWER: "1" };
     delete env.BUN_BE_BUN; // otherwise the opencode binary would act as bun
     const cmd = [...(args.server ? ["--server", args.server] : []), "--session", args.session];
+    let unzoomedByUser = false;
     await new Promise((resolve) => {
-      const child = spawn(args.bin || "opencode", cmd, { stdio: "inherit", env });
+      child = spawn(args.bin || "opencode", cmd, { stdio: "inherit", env });
       child.on("exit", resolve);
       child.on("error", resolve);
+      // Un-zooming the pane (ctrl+b z) collapses back to the card.
+      const watch = setInterval(async () => {
+        if (!pane || !child || child.exitCode !== null) return;
+        if ((await zoomedSelf(pane)) === false) {
+          unzoomedByUser = true;
+          clearInterval(watch);
+          child.kill("SIGTERM");
+        }
+      }, 700);
+      child.on("exit", () => clearInterval(watch));
     });
-    if (pane) await herdr(["pane", "zoom", pane, "--off"]);
+    child = undefined;
+    if (pane && !unzoomedByUser) await herdr(["pane", "zoom", pane, "--off"]);
+    try {
+      fs.rmSync(marker, { force: true });
+    } catch {}
     expanded = false;
     enterCardMode();
   }
+
+  // Zooming the card's pane (ctrl+b z) expands it too.
+  setInterval(async () => {
+    if (expanded || !pane) return;
+    if ((await zoomedSelf(pane)) === true && !expanded) expand({ alreadyZoomed: true });
+  }, 700);
 
   stdin.on("data", (buf) => {
     if (expanded) return;
@@ -179,7 +223,20 @@ async function main() {
     if (s === "\r" || s === "\n" || /\x1b\[<0;\d+;\d+M/.test(s)) expand();
   });
   stdout.on("resize", () => draw(true));
-  process.on("exit", () => stdout.write(`${MOUSE_OFF}${ESC}?25h`));
+  process.on("exit", () => {
+    stdout.write(`${MOUSE_OFF}${ESC}?25h`);
+    try {
+      fs.rmSync(marker, { force: true });
+    } catch {}
+    child?.kill("SIGTERM");
+  });
+  // While expanded, ctrl+c belongs to the full view (its process group gets the
+  // same SIGINT); in card mode raw input delivers it as a key instead.
+  process.on("SIGINT", () => {
+    if (!expanded) process.exit(0);
+  });
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGHUP", () => process.exit(0));
 
   enterCardMode();
   setInterval(draw, 250); // state file updates + elapsed clock

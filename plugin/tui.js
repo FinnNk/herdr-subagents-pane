@@ -166,6 +166,7 @@ function setup(api) {
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
     onStatus: (id, info) => cards.status(id, info),
+    isPinned: (id) => fs.existsSync(`${stateFile(id)}.expanded`),
     closeDelayMs: intFromEnv("HERDR_SUBAGENTS_CLOSE_DELAY_MS", DEFAULT_CLOSE_DELAY_MS),
     maxPanes: intFromEnv("HERDR_SUBAGENTS_MAX_PANES", DEFAULT_MAX_PANES),
     settleMs: intFromEnv("HERDR_SUBAGENTS_SETTLE_MS", DEFAULT_SETTLE_MS),
