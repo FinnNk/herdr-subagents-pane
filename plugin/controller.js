@@ -13,7 +13,10 @@
 //   subagents and are woken by their results, so "parent idle" alone is not a
 //   reliable "done" signal (e.g. a driver/navigator loop relayed via the parent).
 // - Any activity anywhere in the tree cancels pending closes.
-// - At the pane cap, the oldest idle viewer is closed to make room.
+// - At the pane cap, the oldest idle viewer is closed to make room, or with
+//   `overflow: "tab"` new viewers go to an overflow tab (a two-row grid) until
+//   that is full too.
+// - After panes open or close, `panes.rebalance` evens out widths and heights.
 // - Layout: the orchestrator keeps the left third; each task gets a column.
 //   Subagents titled "<Role>: <Task>" with the same task share a column
 //   (e.g. "Driver: implementation" and "Navigator: implementation" stack in
@@ -59,7 +62,9 @@ const STOP_EVENTS = new Set([
  * @param {boolean} [opts.autoClose] close panes once the tree is quiet (false: keep them, labelled "done")
  * @param {number} [opts.closeDelayMs] debounce before closing an idle subagent's pane
  * @param {number} [opts.settleMs] how long the tree must stay quiet before countdowns start
- * @param {number} [opts.maxPanes] cap on simultaneously open viewer panes
+ * @param {number} [opts.maxPanes] cap on simultaneously open viewer panes (in the main tab)
+ * @param {"evict"|"tab"} [opts.overflow] at the cap: close the oldest idle viewer, or use an overflow tab
+ * @param {number} [opts.overflowMaxPanes] cap on viewers in the overflow tab
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
  * @param {(id: string, info: {title?: string, status: string, rounds: number}) => void} [opts.onStatus]
  *        called whenever a subagent's status may have changed (e.g. to update a card)
@@ -80,6 +85,8 @@ export function createController({
   closeDelayMs = DEFAULT_CLOSE_DELAY_MS,
   settleMs = DEFAULT_SETTLE_MS,
   maxPanes = DEFAULT_MAX_PANES,
+  overflow = "evict",
+  overflowMaxPanes = 6,
   timers = globalThis,
   log = () => {},
 }) {
@@ -134,6 +141,8 @@ export function createController({
         id,
         title: undefined,
         column: undefined, // task key the current pane was placed under
+        area: undefined, // "main" or "overflow" (tab the current pane is in)
+        row: undefined, // overflow grid row (0 or 1)
         paneId: undefined,
         openedSeq: 0, // order in which the current pane was opened (stacking)
         rounds: 0, // number of times the subagent started work
@@ -228,14 +237,26 @@ export function createController({
 
   // ----- panes -------------------------------------------------------------
 
-  function openPanes() {
-    return [...children.values()].filter((c) => c.paneId);
+  function openPanes(area) {
+    return [...children.values()].filter((c) => c.paneId && (!area || (c.area ?? "main") === area));
+  }
+
+  let rebalancePending = false;
+  /** Even out sizes once the current pane operations are done. */
+  function requestRebalance() {
+    if (!panes.rebalance || rebalancePending) return;
+    rebalancePending = true;
+    enqueue(async () => {
+      rebalancePending = false;
+      if (disposed) return;
+      await panes.rebalance(openPanes().map((c) => c.paneId));
+    });
   }
 
   /** Open viewers grouped by column, columns ordered left to right (by first open). */
   function columns(except) {
     const byKey = new Map();
-    for (const o of openPanes()) {
+    for (const o of openPanes("main")) {
       if (o === except) continue;
       if (!byKey.has(o.column)) byKey.set(o.column, []);
       byKey.get(o.column).push(o);
@@ -270,6 +291,31 @@ export function createController({
     return { key, anchor, restack: lower };
   }
 
+  /**
+   * Where a viewer goes in the overflow tab: a two-row grid, filling the row
+   * with fewer panes. The first viewer becomes the new tab's own pane.
+   */
+  function overflowPlacement(c) {
+    const key = "overflow";
+    const ov = openPanes("overflow").filter((o) => o !== c).sort((a, b) => a.openedSeq - b.openedSeq);
+    if (ov.length === 0) {
+      c.row = 0;
+      return { key, anchor: { area: "overflow" } };
+    }
+    const rows = [ov.filter((o) => o.row !== 1), ov.filter((o) => o.row === 1)];
+    const lone = rows[0].length + rows[1].length === 1 ? ov[0] : undefined;
+    if (lone) {
+      // Second viewer: start the bottom row under the only one.
+      lone.row = 0;
+      c.row = 1;
+      return { key, anchor: { area: "overflow", paneId: lone.paneId, direction: "down" } };
+    }
+    let r = rows[0].length <= rows[1].length ? 0 : 1;
+    if (rows[r].length === 0) r = 1 - r; // an emptied row can't be split into; extend the other
+    c.row = r;
+    return { key, anchor: { area: "overflow", paneId: rows[r].at(-1).paneId, direction: "right", ratio: 0.5 } };
+  }
+
   /** Oldest idle viewer whose parent is idle too, or failing that any idle viewer. */
   function evictionCandidate(except) {
     const idle = openPanes().filter((c) => c !== except && !busy(c));
@@ -285,6 +331,7 @@ export function createController({
     c.shownLabel = undefined;
     await panes.close(paneId);
     log("closed viewer", { child: c.id, pane: paneId, why });
+    requestRebalance();
   }
 
   /** Open (or reopen) the pane now. Excluded subagents only open when they need input. */
@@ -296,15 +343,21 @@ export function createController({
       if (c.paneId && (await panes.exists(c.paneId))) return;
       c.paneId = undefined;
       if (c.blockers.size === 0 && isExcluded(c)) return;
-      if (openPanes().length >= maxPanes) {
-        const victim = evictionCandidate(c);
-        if (!victim) {
-          log("max panes reached and all viewers busy; not opening", { child: c.id });
-          return;
+      let area = "main";
+      if (openPanes("main").length >= maxPanes) {
+        if (overflow === "tab" && openPanes("overflow").length < overflowMaxPanes) area = "overflow";
+        else {
+          const victim = evictionCandidate(c);
+          if (!victim) {
+            log("max panes reached and all viewers busy; not opening", { child: c.id });
+            return;
+          }
+          area = victim.area ?? "main";
+          await closePane(victim, "evicted for a newer subagent");
         }
-        await closePane(victim, "evicted for a newer subagent");
       }
-      const { key, anchor, restack = [] } = placement(c);
+      c.area = area;
+      const { key, anchor, restack = [] } = area === "overflow" ? overflowPlacement(c) : placement(c);
       // Collapse the column to its top pane so the split below spans its full height.
       for (const m of restack) {
         const paneId = m.paneId;
@@ -326,6 +379,7 @@ export function createController({
         if (m.closeTimer !== undefined && !m.paneId) cancelClose(m);
       }
       if (restack.length) log("restacked column", { panes: restack.map((m) => m.paneId) });
+      requestRebalance();
       // State may have moved on while the split was in flight.
       if (c.paneId && settled && closable(c)) scheduleClose(c);
     });

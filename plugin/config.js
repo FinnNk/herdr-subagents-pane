@@ -20,6 +20,8 @@ export const DEFAULTS = Object.freeze({
   closeDelaySeconds: 20,
   settleSeconds: 3,
   maxPanes: 4,
+  overflow: "evict",
+  overflowMaxPanes: 6,
   summary: true,
   debugLog: null,
   excludeAgents: [],
@@ -40,6 +42,8 @@ const FILE_KEYS = {
   closeDelaySeconds: [isSeconds, "a number of seconds (0 or more)"],
   settleSeconds: [isSeconds, "a number of seconds (0 or more)"],
   maxPanes: [isPaneCount, "a whole number, 1 or more"],
+  overflow: [(v) => v === "evict" || v === "tab", '"evict" or "tab"'],
+  overflowMaxPanes: [isPaneCount, "a whole number, 1 or more"],
   summary: [isBool, "true or false"],
   debugLog: [isPathOrNull, "a file path or null"],
   excludeAgents: [isNameList, "a list of agent names"],
@@ -72,6 +76,8 @@ const ENV_KEYS = {
   HERDR_SUBAGENTS_CLOSE_DELAY_MS: ["closeDelaySeconds", parseMs, "milliseconds"],
   HERDR_SUBAGENTS_SETTLE_MS: ["settleSeconds", parseMs, "milliseconds"],
   HERDR_SUBAGENTS_MAX_PANES: ["maxPanes", parseCount, "a whole number, 1 or more"],
+  HERDR_SUBAGENTS_OVERFLOW: ["overflow", (raw) => (["evict", "tab"].includes(raw.trim()) ? raw.trim() : undefined), "evict or tab"],
+  HERDR_SUBAGENTS_OVERFLOW_MAX_PANES: ["overflowMaxPanes", parseCount, "a whole number, 1 or more"],
   HERDR_SUBAGENTS_SUMMARY: ["summary", parseBool, "1 or 0"],
   HERDR_SUBAGENTS_DEBUG: ["debugLog", (raw) => raw || undefined, "a file path"],
 };
@@ -90,7 +96,7 @@ export function configPaths(env = process.env, home = os.homedir()) {
  * Resolve settings. Invalid values are ignored (the default or file value is
  * kept) and reported in `warnings`; nothing here throws.
  * @returns {{ config: { enabled: boolean, autoClose: boolean, openDelayMs: number, closeDelayMs: number,
- *   settleMs: number, maxPanes: number, summary: boolean, debugLog: string|null,
+ *   settleMs: number, maxPanes: number, overflow: "evict"|"tab", overflowMaxPanes: number, summary: boolean, debugLog: string|null,
  *   excludeAgents: string[], excludeTitles: string[] },
  *   source: string|null, warnings: string[] }}
  */
@@ -150,6 +156,8 @@ export function loadConfig({ env = process.env, home = os.homedir(), readFile = 
       closeDelayMs: Math.round(values.closeDelaySeconds * 1000),
       settleMs: Math.round(values.settleSeconds * 1000),
       maxPanes: values.maxPanes,
+      overflow: values.overflow,
+      overflowMaxPanes: values.overflowMaxPanes,
       summary: values.summary,
       debugLog: values.debugLog,
       excludeAgents: [...values.excludeAgents],

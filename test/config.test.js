@@ -37,6 +37,8 @@ describe("loadConfig", () => {
         closeDelayMs: 20_000,
         settleMs: 3_000,
         maxPanes: 4,
+        overflow: "evict",
+        overflowMaxPanes: 6,
         summary: true,
         debugLog: null,
         excludeAgents: [],
@@ -109,6 +111,12 @@ describe("loadConfig", () => {
     expect(r.config).toMatchObject({ openDelayMs: 2_500, excludeAgents: ["explore"], excludeTitles: [] });
     expect(r.warnings).toEqual([`${GLOBAL}: "excludeTitles" should be a list of valid regular expressions; using []`]);
   });
+});
+
+test("overflow settings from the file and the environment", () => {
+  const r = load({ [GLOBAL]: JSON.stringify({ overflow: "tab", overflowMaxPanes: 8 }) }, { HERDR_SUBAGENTS_OVERFLOW_MAX_PANES: "3" });
+  expect(r.config).toMatchObject({ overflow: "tab", overflowMaxPanes: 3 });
+  expect(load({ [GLOBAL]: '{"overflow": "grid"}' }).warnings).toEqual([`${GLOBAL}: "overflow" should be "evict" or "tab"; using "evict"`]);
 });
 
 describe("makeExclude", () => {
