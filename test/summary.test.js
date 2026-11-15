@@ -56,6 +56,35 @@ describe("summary store", () => {
   });
 });
 
+describe("summary store: titles and seeding", () => {
+  test("uses display titles (e.g. #2) for subagents but not the root", () => {
+    const parents = new Map([[RES, ROOT], [NAV, ROOT]]);
+    const store = createSummaryStore({
+      write: () => {},
+      inTree: (id) => id === ROOT || parents.has(id),
+      parentOf: (id) => parents.get(id),
+      root: () => ROOT,
+      titleOf: (id) => (id === NAV ? "Research: x #2" : id === ROOT ? "nope" : undefined),
+      throttleMs: 0,
+    });
+    store.handle("session.created", { sessionID: RES, parentID: ROOT, title: "Research: x" });
+    store.handle("session.created", { sessionID: NAV, parentID: ROOT, title: "Research: x" });
+    store.title(ROOT, "Wordfreq");
+    const titles = store.snapshot().sessions.map((s) => s.title);
+    expect(titles).toEqual(["Wordfreq", "Research: x", "Research: x #2"]);
+  });
+
+  test("seed sets totals so far and a running state; later steps add to it", () => {
+    const { store, ev, tick, now } = setup();
+    tick(100_000);
+    store.seed(DRV, { title: "Driver: impl", running: true, runStart: 90_000, tokensIn: 5_000, tokensOut: 300 });
+    ev("session.step.ended", { sessionID: DRV, tokens: { input: 100, output: 10 } });
+    const drv = store.snapshot().sessions.find((s) => s.id === DRV);
+    expect(drv).toMatchObject({ title: "Driver: impl", running: true, runStart: 90_000, tokensIn: 5_100, tokensOut: 310 });
+    expect(now()).toBe(100_000);
+  });
+});
+
 describe("renderSummary", () => {
   test("draws the tree with indicators, live active time, tokens and a total", () => {
     const { store, ev, tick, now } = setup();
@@ -105,6 +134,10 @@ describe("renderSummary", () => {
     expect(formatDuration(98_000)).toBe("1m38s");
     expect(formatDuration(3_720_000)).toBe("1h02m");
   });
+});
+
+test("summaryCommand passes the owner pid for the watchdog", () => {
+  expect(summaryCommand({ bin: "/o/opencode", summaryScript: "/p/summary.js", stateFile: "/r/s.json", owner: 42 })).toEndWith(" --owner 42");
 });
 
 test("summaryCommand runs the summary script with embedded bun", () => {

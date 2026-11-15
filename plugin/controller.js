@@ -3,8 +3,10 @@
 // and `timers`, so this file has no dependency on opencode or herdr.
 //
 // Rules:
-// - A pane opens when a descendant of the TUI's root session is created or
-//   starts work (or asks for input).
+// - A pane opens once a descendant of the TUI's root session has been working
+//   for `openDelayMs` (or has a working subagent of its own), so short-lived
+//   subagents never get one. Asking for input opens it at once. Subagents the
+//   `exclude` callback rejects get no pane unless they ask for input.
 // - Close countdowns start only when the whole tree is quiet: nothing under the
 //   TUI's root session (root included) is running or waiting for input, for at
 //   least `settleMs`. Orchestrators end their turn after launching background
@@ -25,6 +27,8 @@
 export const DEFAULT_CLOSE_DELAY_MS = 20_000;
 export const DEFAULT_MAX_PANES = 4;
 export const DEFAULT_SETTLE_MS = 3_000;
+/** The controller opens panes immediately by default; the plugin passes the configured delay. */
+export const DEFAULT_OPEN_DELAY_MS = 0;
 /** Share of its pane the orchestrator keeps when the first column opens. */
 export const ORCHESTRATOR_SHARE = 1 / 3;
 
@@ -46,8 +50,12 @@ const STOP_EVENTS = new Set([
  *           exists(paneId: string): Promise<boolean>,
  *           close(paneId: string): Promise<void>,
  *           rename?(paneId: string, label: string): Promise<void> }} opts.panes
+ * @param {{ open(): Promise<void>, close(): Promise<void> }} [opts.strip] summary strip: opened
+ *        with the first subagent, closed once the tree has been quiet for closeDelayMs
  * @param {(id: string) => string|undefined} [opts.lookupParent] fallback parent lookup (e.g. opencode cache)
  * @param {(id: string) => boolean|undefined} [opts.lookupRunning] fallback "is this session running" (e.g. opencode cache)
+ * @param {number} [opts.openDelayMs] how long a subagent must be working before its pane opens
+ * @param {(info: {id: string, title?: string}) => boolean} [opts.exclude] true: no pane (unless it needs input)
  * @param {boolean} [opts.autoClose] close panes once the tree is quiet (false: keep them, labelled "done")
  * @param {number} [opts.closeDelayMs] debounce before closing an idle subagent's pane
  * @param {number} [opts.settleMs] how long the tree must stay quiet before countdowns start
@@ -61,11 +69,14 @@ const STOP_EVENTS = new Set([
  */
 export function createController({
   panes,
+  strip,
   lookupParent = () => undefined,
   lookupRunning = () => undefined,
   onStatus = () => {},
   isPinned = () => false,
   autoClose = true,
+  openDelayMs = DEFAULT_OPEN_DELAY_MS,
+  exclude = () => false,
   closeDelayMs = DEFAULT_CLOSE_DELAY_MS,
   settleMs = DEFAULT_SETTLE_MS,
   maxPanes = DEFAULT_MAX_PANES,
@@ -81,6 +92,8 @@ export function createController({
   let openSeq = 0;
   let settleTimer; // pending "tree has been quiet for settleMs"
   let settled = false; // tree quiet and settle period elapsed
+  let stripOpen = false;
+  let stripTimer; // pending strip close
 
   /** Serialize all pane operations so splits/closes never race each other. */
   function enqueue(fn) {
@@ -126,9 +139,11 @@ export function createController({
         rounds: 0, // number of times the subagent started work
         blockers: new Set(),
         closeTimer: undefined,
+        openTimer: undefined, // pending delayed open
         shownLabel: undefined,
       };
       children.set(id, c);
+      openStrip();
     }
     return c;
   }
@@ -137,6 +152,36 @@ export function createController({
 
   function busy(c) {
     return isRunning(c.id) || c.blockers.size > 0;
+  }
+
+  /** Is any tracked descendant of `id` running or blocked? */
+  function busyBelow(id) {
+    for (const k of children.values()) {
+      if (k.id === id) continue;
+      let p = parentOf(k.id);
+      const seen = new Set();
+      while (p && !seen.has(p) && p !== root) {
+        if (p === id) {
+          if (busy(k)) return true;
+          break;
+        }
+        seen.add(p);
+        p = parentOf(p);
+      }
+    }
+    return false;
+  }
+
+  /** Title shown for a subagent; repeated titles get "#2", "#3"… in creation order. */
+  function displayTitle(c) {
+    const base = c.title ?? `subagent ${c.id.slice(-6)}`;
+    if (!c.title) return base;
+    let n = 0;
+    for (const k of children.values()) {
+      if (k.title === c.title) n += 1;
+      if (k === c) break;
+    }
+    return n > 1 ? `${base} #${n}` : base;
   }
 
   /** Nothing in the tree (root + all tracked descendants) is running or blocked. */
@@ -161,13 +206,13 @@ export function createController({
   }
 
   function label(c) {
-    return `${c.title ?? `subagent ${c.id.slice(-6)}`} · ${status(c)}`;
+    return `${displayTitle(c)} · ${status(c)}`;
   }
 
   /** Push the current label to the pane if it changed. */
   function refreshLabel(c) {
     try {
-      onStatus(c.id, { title: c.title, status: status(c), rounds: c.rounds });
+      onStatus(c.id, { title: displayTitle(c), status: status(c), rounds: c.rounds });
     } catch (err) {
       log("onStatus failed", { err: String(err) });
     }
@@ -242,12 +287,15 @@ export function createController({
     log("closed viewer", { child: c.id, pane: paneId, why });
   }
 
+  /** Open (or reopen) the pane now. Excluded subagents only open when they need input. */
   function ensureOpen(c) {
     cancelClose(c);
+    cancelOpen(c);
     enqueue(async () => {
       if (disposed || !children.has(c.id)) return;
       if (c.paneId && (await panes.exists(c.paneId))) return;
       c.paneId = undefined;
+      if (c.blockers.size === 0 && isExcluded(c)) return;
       if (openPanes().length >= maxPanes) {
         const victim = evictionCandidate(c);
         if (!victim) {
@@ -284,6 +332,39 @@ export function createController({
     refreshLabel(c);
   }
 
+  function isExcluded(c) {
+    try {
+      return !!exclude({ id: c.id, title: c.title });
+    } catch (err) {
+      log("exclude failed", { err: String(err) });
+      return false;
+    }
+  }
+
+  /**
+   * A subagent started work: open its pane once it has kept working for
+   * openDelayMs. A pane that was open before (e.g. closed by the user) reopens
+   * at once, as before.
+   */
+  function requestOpen(c) {
+    cancelClose(c);
+    if (c.paneId || openDelayMs <= 0) return ensureOpen(c);
+    if (c.openTimer !== undefined) return;
+    c.openTimer = timers.setTimeout(() => {
+      c.openTimer = undefined;
+      if (disposed || !children.has(c.id)) return;
+      if (busy(c) || busyBelow(c.id)) ensureOpen(c);
+      else log("not opening: finished within the open delay", { child: c.id });
+    }, openDelayMs);
+  }
+
+  function cancelOpen(c) {
+    if (c.openTimer !== undefined) {
+      timers.clearTimeout(c.openTimer);
+      c.openTimer = undefined;
+    }
+  }
+
   function cancelClose(c) {
     if (c.closeTimer !== undefined) {
       log("close cancelled", { child: c.id });
@@ -312,6 +393,46 @@ export function createController({
     refreshLabel(c);
   }
 
+  // ----- summary strip -------------------------------------------------------
+
+  function openStrip() {
+    cancelStripClose();
+    if (!strip || stripOpen) return;
+    stripOpen = true;
+    enqueue(async () => {
+      await strip.open();
+      log("opened summary strip");
+    });
+  }
+
+  function closeStrip(why) {
+    cancelStripClose();
+    if (!strip || !stripOpen) return;
+    stripOpen = false;
+    enqueue(async () => {
+      await strip.close();
+      log("closed summary strip", { why });
+    });
+  }
+
+  function cancelStripClose() {
+    if (stripTimer !== undefined) {
+      timers.clearTimeout(stripTimer);
+      stripTimer = undefined;
+    }
+  }
+
+  /** Close the strip with the panes, once the tree has been quiet for closeDelayMs. */
+  function scheduleStripClose() {
+    if (!strip || !stripOpen || !autoClose || stripTimer !== undefined) return;
+    stripTimer = timers.setTimeout(() => {
+      stripTimer = undefined;
+      if (disposed || !treeQuiet()) return;
+      if (openPanes().some((c) => isPinned(c.id))) return scheduleStripClose(); // an expanded view keeps it
+      closeStrip("idle");
+    }, closeDelayMs);
+  }
+
   function cancelSettle() {
     if (settleTimer !== undefined) {
       timers.clearTimeout(settleTimer);
@@ -323,6 +444,7 @@ export function createController({
     settled = true;
     log("tree settled; starting close countdowns");
     for (const c of openPanes()) if (c.closeTimer === undefined && closable(c)) scheduleClose(c);
+    scheduleStripClose();
   }
 
   /** Re-evaluate close countdowns and labels after any state change in the tree. */
@@ -340,6 +462,7 @@ export function createController({
     } else {
       cancelSettle();
       settled = false;
+      cancelStripClose();
       for (const c of children.values()) cancelClose(c);
     }
     for (const c of children.values()) refreshLabel(c);
@@ -350,9 +473,11 @@ export function createController({
     settled = false;
     for (const c of children.values()) {
       cancelClose(c);
+      cancelOpen(c);
       enqueue(() => closePane(c, why));
     }
     children.clear();
+    closeStrip(why);
   }
 
   // ----- public API --------------------------------------------------------
@@ -378,7 +503,7 @@ export function createController({
         if (isOurSubagent(data.sessionID)) {
           const c = child(data.sessionID);
           if (data.title) c.title = data.title;
-          ensureOpen(c);
+          requestOpen(c);
           reevaluate();
         }
         return;
@@ -389,6 +514,7 @@ export function createController({
         parents.delete(data.sessionID);
         running.delete(data.sessionID);
         if (c) {
+          cancelOpen(c);
           children.delete(c.id);
           enqueue(() => closePane(c, "deleted"));
           reevaluate();
@@ -417,7 +543,13 @@ export function createController({
 
       if (type === "session.execution.started") {
         c.rounds += 1;
-        ensureOpen(c);
+        requestOpen(c);
+        // A parent's own pane may be waiting on a delay that a busy child now satisfies.
+        for (let p = parentOf(c.id); p && p !== root; p = parentOf(p)) {
+          const pc = children.get(p);
+          if (!pc || pc.paneId || pc.openTimer !== undefined) continue;
+          if (!isRunning(p)) requestOpen(pc);
+        }
       } else if (type === "permission.asked") {
         c.blockers.add(`permission:${data.id}`);
         ensureOpen(c);
@@ -437,9 +569,23 @@ export function createController({
     /** Close every viewer this controller opened and stop reacting to events. */
     async dispose() {
       if (disposed) return;
-      closeAll("dispose");
-      cancelSettle();
       disposed = true;
+      cancelSettle();
+      cancelStripClose();
+      // opencode may exit soon after: close everything at once, not one by one.
+      const all = [...children.values()];
+      children.clear();
+      for (const c of all) {
+        cancelClose(c);
+        cancelOpen(c);
+      }
+      const closes = all.filter((c) => c.paneId).map((c) => panes.close(c.paneId).catch(() => {}));
+      if (strip && stripOpen) {
+        stripOpen = false;
+        closes.push(strip.close().catch(() => {}));
+      }
+      for (const c of all) c.paneId = undefined;
+      await Promise.all(closes);
       await queue;
     },
 
@@ -457,9 +603,32 @@ export function createController({
       return parentOf(id);
     },
 
-    /** Title of a tracked subagent, if known. */
+    /** Display title of a tracked subagent ("#2" for repeated titles), if known. */
     titleOf(id) {
-      return children.get(id)?.title;
+      const c = children.get(id);
+      return c ? displayTitle(c) : undefined;
+    },
+
+    /**
+     * Track subagents that already existed when this TUI attached (e.g. after a
+     * restart): [{ id, parentID, title, running }], in creation order. Running
+     * ones open at once; idle ones are tracked without a pane.
+     */
+    adopt(sessions) {
+      if (disposed || !root) return;
+      for (const s of sessions) if (s.parentID) parents.set(s.id, s.parentID);
+      for (const s of sessions) {
+        if (!isOurSubagent(s.id) || children.has(s.id)) continue;
+        const c = child(s.id);
+        if (s.title) c.title = s.title;
+        c.rounds = 1; // it has run before this TUI attached
+        if (s.running) running.set(s.id, true);
+      }
+      for (const s of sessions) {
+        const c = children.get(s.id);
+        if (c && (busy(c) || busyBelow(c.id))) ensureOpen(c);
+      }
+      reevaluate();
     },
 
     /** Is this session one of the subagents this controller tracks? */

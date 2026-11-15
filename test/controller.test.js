@@ -577,6 +577,237 @@ describe("layout and capacity", () => {
   });
 });
 
+describe("open delay", () => {
+  const D = 10_000;
+
+  test("a subagent gets a pane only after working for the delay", async () => {
+    const { c, timers, panes, spawn, start } = setup({ openDelayMs: D });
+    spawn(A, ROOT, "Research: a");
+    start(A);
+    await c.idle();
+    timers.advance(D - 1);
+    await c.idle();
+    expect(panes.opens()).toEqual([]);
+    timers.advance(1);
+    await c.idle();
+    expect(panes.opens().map((x) => x[1])).toEqual([A]);
+  });
+
+  test("a subagent that finishes within the delay never gets a pane", async () => {
+    const { c, timers, panes, spawn, start, stop } = setup({ openDelayMs: D });
+    spawn(A, ROOT, "Caesar: codebreaking");
+    start(A);
+    timers.advance(4_000);
+    stop(A);
+    timers.advance(D);
+    await c.idle();
+    expect(panes.opens()).toEqual([]);
+    expect(c.isTracked(A)).toBe(true); // still known (e.g. for the summary strip)
+  });
+
+  test("a resumed subagent gets a fresh delay", async () => {
+    const { c, timers, panes, spawn, start, stop } = setup({ openDelayMs: D });
+    spawn(A, ROOT, "Navigator: impl");
+    start(A);
+    timers.advance(3_000);
+    stop(A);
+    timers.advance(D);
+    start(A);
+    timers.advance(D);
+    await c.idle();
+    expect(panes.opens().map((x) => x[1])).toEqual([A]);
+  });
+
+  test("asking for input opens the pane at once", async () => {
+    const { c, panes, spawn, start, ev } = setup({ openDelayMs: D });
+    spawn(A);
+    start(A);
+    ev("permission.asked", { sessionID: A, id: "p1" });
+    await c.idle();
+    expect(panes.opens().map((x) => x[1])).toEqual([A]);
+  });
+
+  test("a parent waiting on a working child opens with it", async () => {
+    const NAV = "ses_nav", DRV = "ses_drv";
+    const { c, timers, panes, spawn, start, stop } = setup({ openDelayMs: D });
+    spawn(NAV, ROOT, "Navigator: impl");
+    start(NAV);
+    timers.advance(5_000);
+    spawn(DRV, NAV, "Driver: impl");
+    stop(NAV); // waits for its driver
+    start(DRV);
+    timers.advance(D);
+    await c.idle();
+    expect(panes.opens().map((x) => x[1]).sort()).toEqual([DRV, NAV].sort());
+  });
+
+  test("a pane the user closed reopens at once on the next work", async () => {
+    const { c, timers, panes, spawn, start, stop } = setup({ openDelayMs: D });
+    spawn(A);
+    start(A);
+    timers.advance(D);
+    await c.idle();
+    stop(A);
+    panes.userCloses("w1:p1");
+    start(A);
+    await c.idle();
+    expect(panes.opens().length).toBe(2);
+  });
+});
+
+describe("summary strip", () => {
+  function withStrip(opts = {}) {
+    const events = [];
+    const strip = { open: async () => events.push("open"), close: async () => events.push("close") };
+    return { ...setup({ strip, ...opts }), events };
+  }
+
+  test("opens with the first subagent, before its delayed pane", async () => {
+    const { c, timers, panes, spawn, start, events } = withStrip({ openDelayMs: 10_000 });
+    start(ROOT);
+    spawn(A, ROOT, "Caesar: codebreaking");
+    start(A);
+    await c.idle();
+    expect(events).toEqual(["open"]);
+    expect(panes.opens()).toEqual([]);
+    spawn(B, ROOT, "Atbash: codebreaking");
+    await c.idle();
+    expect(events).toEqual(["open"]); // only once
+    timers.advance(10_000);
+    await c.idle();
+  });
+
+  test("shows quick subagents that never get a pane, then closes once quiet", async () => {
+    const { c, timers, panes, spawn, start, stop, events } = withStrip({ openDelayMs: 10_000 });
+    start(ROOT);
+    spawn(A);
+    start(A);
+    timers.advance(3_000);
+    stop(A);
+    stop(ROOT);
+    await c.idle();
+    timers.advance(19_999);
+    await c.idle();
+    expect(events).toEqual(["open"]);
+    timers.advance(1);
+    await c.idle();
+    expect(events).toEqual(["open", "close"]);
+    expect(panes.opens()).toEqual([]);
+  });
+
+  test("new activity cancels the strip countdown; it reopens for a later run", async () => {
+    const { c, timers, spawn, start, stop, events } = withStrip();
+    spawn(A);
+    start(A);
+    stop(A);
+    await c.idle();
+    timers.advance(10_000);
+    start(A); // resumed before the countdown ended
+    timers.advance(30_000);
+    await c.idle();
+    expect(events).toEqual(["open"]);
+    stop(A);
+    timers.advance(20_000);
+    await c.idle();
+    spawn(B);
+    await c.idle();
+    expect(events).toEqual(["open", "close", "open"]);
+  });
+
+  test("stays open while a view is expanded, and with autoClose off", async () => {
+    const pinned = withStrip({ isPinned: () => true });
+    pinned.spawn(A);
+    pinned.start(A);
+    pinned.stop(A);
+    await pinned.c.idle();
+    pinned.timers.advance(120_000);
+    await pinned.c.idle();
+    expect(pinned.events).toEqual(["open"]);
+
+    const keep = withStrip({ autoClose: false });
+    keep.spawn(A);
+    keep.timers.advance(120_000);
+    await keep.c.idle();
+    expect(keep.events).toEqual(["open"]);
+  });
+
+  test("closes with everything else when the route changes", async () => {
+    const { c, spawn, events } = withStrip();
+    spawn(A);
+    c.setRoute("ses_other_root");
+    await c.idle();
+    expect(events).toEqual(["open", "close"]);
+  });
+});
+
+describe("exclusion", () => {
+  test("excluded subagents get no pane but stay tracked", async () => {
+    const { c, panes, spawn, start } = setup({ exclude: ({ title }) => /^Echo:/.test(title ?? "") });
+    spawn(A, ROOT, "Echo: x");
+    spawn(B, ROOT, "Research: y");
+    start(A);
+    start(B);
+    await c.idle();
+    expect(panes.opens().map((x) => x[1])).toEqual([B]);
+    expect(c.isTracked(A)).toBe(true);
+  });
+
+  test("an excluded subagent that needs input still gets a pane", async () => {
+    const { c, panes, spawn, ev } = setup({ exclude: () => true });
+    spawn(A);
+    ev("form.created", { form: { sessionID: A, id: "f1" } });
+    await c.idle();
+    expect(panes.opens().map((x) => x[1])).toEqual([A]);
+  });
+});
+
+describe("unique titles", () => {
+  test("repeated titles get #2, #3 in creation order", async () => {
+    const { c, spawn } = setup();
+    spawn("ses_1", ROOT, "Research: x");
+    spawn("ses_2", ROOT, "Research: x");
+    spawn("ses_3", ROOT, "Research: x");
+    spawn("ses_4", ROOT, "Docs: y");
+    await c.idle();
+    expect(["ses_1", "ses_2", "ses_3", "ses_4"].map((id) => c.titleOf(id))).toEqual([
+      "Research: x",
+      "Research: x #2",
+      "Research: x #3",
+      "Docs: y",
+    ]);
+    expect(c.snapshot().find((x) => x.id === "ses_2").label).toBe("Research: x #2 · starting");
+  });
+});
+
+describe("adopting existing subagents", () => {
+  test("running ones open at once, idle ones are tracked without a pane", async () => {
+    const { c, panes } = setup({ openDelayMs: 10_000 });
+    c.adopt([
+      { id: "ses_nav", parentID: ROOT, title: "Navigator: impl", running: false },
+      { id: "ses_drv", parentID: "ses_nav", title: "Driver: impl", running: true },
+      { id: "ses_res", parentID: ROOT, title: "Research: a", running: false },
+      { id: "ses_foreign", parentID: "ses_elsewhere", title: "Other", running: true },
+    ]);
+    await c.idle();
+    // The driver runs; its navigator waits on it, so both show. Research is done.
+    expect(panes.opens().map((x) => x[1]).sort()).toEqual(["ses_drv", "ses_nav"]);
+    expect(c.isTracked("ses_res")).toBe(true);
+    expect(c.isTracked("ses_foreign")).toBe(false);
+    expect(c.snapshot().find((s) => s.id === "ses_drv").label).toBe("Driver: impl · working");
+  });
+
+  test("adopted panes close once the tree is quiet, like any other", async () => {
+    const { c, timers, panes, stop } = setup();
+    c.adopt([{ id: A, parentID: ROOT, title: "Research: a", running: true }]);
+    await c.idle();
+    stop(A);
+    await c.idle();
+    timers.advance(20_000);
+    await c.idle();
+    expect(panes.closes()).toEqual([["close", "w1:p1"]]);
+  });
+});
+
 describe("lifecycle", () => {
   test("session.deleted closes immediately", async () => {
     const { c, panes, spawn, ev } = setup();

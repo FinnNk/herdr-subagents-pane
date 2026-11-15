@@ -3,8 +3,9 @@
 //
 // The store runs in the parent TUI (fed with session events) and writes JSON;
 // the same file run as a script renders that JSON in the summary pane:
-//   BUN_BE_BUN=1 opencode summary.js --state <file>
+//   BUN_BE_BUN=1 opencode summary.js --state <file> [--owner <TUI pid>]
 import fs from "node:fs";
+import { watchOwner } from "./watchdog.js";
 
 const STOP_EVENTS = new Set([
   "session.execution.succeeded",
@@ -20,11 +21,12 @@ const STOP_EVENTS = new Set([
  * @param {(id: string) => boolean} opts.inTree   is this session the root or one of its descendants?
  * @param {(id: string) => string|undefined} opts.parentOf
  * @param {() => string|undefined} opts.root
+ * @param {(id: string) => string|undefined} [opts.titleOf] display title override (e.g. "#2" for repeats)
  * @param {() => number} [opts.now]
  * @param {number} [opts.throttleMs]
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
  */
-export function createSummaryStore({ write, inTree, parentOf, root, now = Date.now, throttleMs = 250, timers = globalThis }) {
+export function createSummaryStore({ write, inTree, parentOf, root, titleOf = () => undefined, now = Date.now, throttleMs = 250, timers = globalThis }) {
   let sessions = new Map(); // id -> stats
   let currentRoot;
   let pending;
@@ -47,7 +49,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, now = Date.n
       sessions: [...sessions.values()].map((s) => ({
         id: s.id,
         parentID: s.id === r ? null : parentOf(s.id) ?? null,
-        title: s.title,
+        title: (s.id === r ? undefined : titleOf(s.id)) ?? s.title,
         order: s.order,
         running: s.running,
         runStart: s.runStart,
@@ -128,6 +130,25 @@ export function createSummaryStore({ write, inTree, parentOf, root, now = Date.n
       if (s.title === title) return;
       s.title = title;
       touch();
+    },
+
+    /**
+     * Seed a session that existed before this TUI attached, from opencode's
+     * cache: totals so far, and whether (and since when) it is running. Active
+     * time before attaching isn't known, so it counts from the current run.
+     */
+    seed(id, { title, running = false, runStart, tokensIn = 0, tokensOut = 0 } = {}) {
+      syncRoot();
+      if (!currentRoot || !inTree(id)) return;
+      const s = stats(id);
+      if (title) s.title = title;
+      if (running && !s.running) {
+        s.running = true;
+        s.runStart = runStart ?? now();
+      }
+      s.tokensIn = Math.max(s.tokensIn, tokensIn);
+      s.tokensOut = Math.max(s.tokensOut, tokensOut);
+      touch(true);
     },
 
     snapshot,
@@ -244,6 +265,8 @@ export function renderSummary(snap, { cols, rows, now = Date.now() }) {
 function main() {
   const i = process.argv.indexOf("--state");
   const file = i >= 0 ? process.argv[i + 1] : undefined;
+  const o = process.argv.indexOf("--owner");
+  if (o >= 0) watchOwner(process.argv[o + 1]);
   const { stdout } = process;
   let last = "";
   const draw = (force = false) => {

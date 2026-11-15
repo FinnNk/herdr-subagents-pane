@@ -6,9 +6,10 @@
 // marker file next to the state file tells the plugin not to close the pane.
 //
 // Run by the plugin as: BUN_BE_BUN=1 opencode card.js --state <file> --session <id>
-//                       [--server <url>] [--bin <opencode binary>]
+//                       [--server <url>] [--bin <opencode binary>] [--owner <TUI pid>]
 import { spawn, execFile } from "node:child_process";
 import fs from "node:fs";
+import { watchOwner } from "./watchdog.js";
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
@@ -236,6 +237,7 @@ async function main() {
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGHUP", () => process.exit(0));
 
+  watchOwner(args.owner, { onGone: () => child?.kill("SIGTERM") });
   enterCardMode();
   setInterval(draw, 250); // state file updates + elapsed clock
 }

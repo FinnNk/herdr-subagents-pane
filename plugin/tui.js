@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createController } from "./controller.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, makeExclude } from "./config.js";
 import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
 import { createSummaryStore } from "./summary.js";
@@ -46,7 +46,7 @@ function makeLogger(file) {
 }
 
 /** Shell command that runs the card for one subagent (falls back to the full view). */
-export function cardCommand({ bin, cardScript, stateFile, childId, server }) {
+export function cardCommand({ bin, cardScript, stateFile, childId, server, owner }) {
   const q = shellQuote;
   const serverArgs = server ? ["--server", q(server)] : [];
   return [
@@ -57,13 +57,15 @@ export function cardCommand({ bin, cardScript, stateFile, childId, server }) {
     "--session", q(childId),
     "--bin", q(bin),
     ...serverArgs,
+    ...(owner ? ["--owner", String(owner)] : []),
   ].join(" ");
 }
 
 /** Shell command that runs the summary strip. */
-export function summaryCommand({ bin, summaryScript, stateFile }) {
+export function summaryCommand({ bin, summaryScript, stateFile, owner }) {
   const q = shellQuote;
-  return ["exec env BUN_BE_BUN=1", q(bin), q(summaryScript), "--state", q(stateFile)].join(" ");
+  const ownerArgs = owner ? ["--owner", String(owner)] : [];
+  return ["exec env BUN_BE_BUN=1", q(bin), q(summaryScript), "--state", q(stateFile), ...ownerArgs].join(" ");
 }
 
 function writeJson(file, value) {
@@ -120,59 +122,44 @@ function setup(api) {
     cwd: process.cwd(),
     env,
     viewerCommand: (childId) =>
-      cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server }),
+      cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server, owner: process.pid }),
   });
 
-  // Summary strip: a full-width pane along the bottom with the agent tree. It is
-  // split off the orchestrator's pane before the first column so it spans the
-  // whole width, and closed together with the last viewer.
-  const stripEnabled = config.summary;
+  // Summary strip: a full-width pane along the bottom with the agent tree. The
+  // controller opens it with the first subagent (before any column, so it spans
+  // the whole width) and closes it once the workflow has been quiet for the
+  // close delay, so it shows even when no subagent works long enough for a pane.
   const summaryFile = path.join(cardDir, "summary.json");
   let stripPane;
-  const viewerPanes = new Set();
-  const panes = {
-    async open(childId, anchor, label) {
-      if (stripEnabled && !stripPane) {
-        try {
+  const strip = config.summary
+    ? {
+        async open() {
+          if (stripPane && (await herdrPanes.exists(stripPane))) return;
           stripPane = await herdrPanes.openStrip({
             ratio: STRIP_RATIO,
             label: "agents",
-            command: summaryCommand({ bin, summaryScript: SUMMARY_SCRIPT, stateFile: summaryFile }),
+            command: summaryCommand({ bin, summaryScript: SUMMARY_SCRIPT, stateFile: summaryFile, owner: process.pid }),
           });
-          log("opened summary strip", { pane: stripPane });
-        } catch (err) {
-          log("summary strip failed", { err: String(err) });
-        }
+        },
+        async close() {
+          const id = stripPane;
+          stripPane = undefined;
+          if (id) await herdrPanes.close(id);
+        },
       }
-      const paneId = await herdrPanes.open(childId, anchor, label);
-      viewerPanes.add(paneId);
-      return paneId;
-    },
-    async exists(paneId) {
-      const ok = await herdrPanes.exists(paneId);
-      if (!ok) viewerPanes.delete(paneId);
-      return ok;
-    },
-    rename: herdrPanes.rename,
-    async close(paneId) {
-      await herdrPanes.close(paneId);
-      viewerPanes.delete(paneId);
-      if (viewerPanes.size === 0 && stripPane) {
-        const strip = stripPane;
-        stripPane = undefined;
-        await herdrPanes.close(strip);
-        log("closed summary strip", { pane: strip });
-      }
-    },
-  };
+    : undefined;
+  const panes = herdrPanes;
 
   controller = createController({
     panes,
+    strip,
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
     onStatus: (id, info) => cards.status(id, info),
     isPinned: (id) => fs.existsSync(`${stateFile(id)}.expanded`),
     autoClose: config.autoClose,
+    openDelayMs: config.openDelayMs,
+    exclude: makeExclude(config, (id) => api.data.session.get(id)?.agent),
     closeDelayMs: config.closeDelayMs,
     maxPanes: config.maxPanes,
     settleMs: config.settleMs,
@@ -190,11 +177,61 @@ function setup(api) {
     inTree: (id) => id === controller.root || controller.isTracked(id),
     parentOf: (id) => controller.parentOf(id),
     root: () => controller.root,
+    titleOf: (id) => controller.titleOf(id),
   });
+
+  // Subagents that already exist when this TUI shows a session (e.g. after a
+  // restart, or when opening a session mid-run) never send session.created
+  // here, so look them up once per root.
+  // Subagents that already exist when this TUI shows a session (e.g. after a
+  // restart, or when opening a session mid-run) never send session.created
+  // here. Load the tree into opencode's cache, the way opencode does itself:
+  // session.sync(id, { children: true }) is read-only (it fetches the session
+  // and lists its children), and session.family(root) then holds every known
+  // member, so repeat for new members until the tree is complete.
+  let adoptedRoot;
+  async function adoptExisting() {
+    const r = controller.root;
+    if (!r || r === adoptedRoot) return;
+    adoptedRoot = r;
+    try {
+      const synced = new Set();
+      let pending = [r];
+      while (pending.length && controller.root === r) {
+        await Promise.all(pending.map((id) => api.data.session.sync(id, { children: true })));
+        for (const id of pending) synced.add(id);
+        pending = (api.data.session.family(r) ?? []).filter((id) => !synced.has(id));
+      }
+      if (controller.root !== r) return;
+      const info = (id) => api.data.session.get(id);
+      const isRunning = (id) => api.data.session.status(id) === "running";
+      const sessions = [...synced]
+        .filter((id) => id !== r)
+        .map((id) => ({ id, parentID: info(id)?.parentID, title: info(id)?.title, running: isRunning(id), created: info(id)?.time?.created ?? 0 }))
+        .sort((a, b) => a.created - b.created);
+      log("adopting existing subagents", { root: r, count: sessions.length });
+      if (sessions.length) controller.adopt(sessions);
+      summary.title(r, info(r)?.title);
+      for (const id of [r, ...sessions.map((x) => x.id)]) {
+        const d = info(id);
+        const t = d?.tokens ?? {};
+        summary.seed(id, {
+          title: id === r ? undefined : d?.title,
+          running: isRunning(id),
+          runStart: d?.time?.busy,
+          tokensIn: (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0),
+          tokensOut: (t.output ?? 0) + (t.reasoning ?? 0),
+        });
+      }
+    } catch (err) {
+      log("adopting existing subagents failed", { err: String(err) });
+    }
+  }
 
   function syncRoute() {
     const route = api.ui.router.current();
     controller.setRoute(route?.type === "session" ? route.sessionID : undefined);
+    if (controller.root !== adoptedRoot) adoptExisting();
   }
 
   const unsubscribe = api.data.listen(({ details }) => {
