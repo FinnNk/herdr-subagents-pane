@@ -112,8 +112,9 @@ Aqmp uszf, cfy tbzv gdbgbip ulv qqtwrkq. Osn jas xyi dfec tgadci. M dpfgw usnid 
   of four panes, so the oldest idle codebreaker (Caesar) is closed to make room.
 - The question has traps: counting 1 to 24 for the hours (300), or forgetting the half-hour
   rings (156). Sometimes one solver gets it wrong and the orchestrator has to reconcile.
-- Known layout quirk: because the codebreaker column is already stacked, the solvers' column is
-  split off the top codebreaker's pane rather than getting the full height.
+- Both columns stay full height: when the solvers arrive, the codebreaker column briefly
+  collapses to its top card so the answer column can be split off beside it, and the other
+  codebreakers reappear underneath.
 
 ### Answer (spoiler)
 
