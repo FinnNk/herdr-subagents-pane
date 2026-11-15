@@ -6,6 +6,25 @@ const SUBAGENT_PREAMBLE = /^You are a subagent spawned by another session\.\s*/;
 const MAX_TEXT = 2_000; // keep the tail of the latest assistant text
 const MAX_INCOMING = 600;
 
+const SUBAGENT_RESULT = /^<subagent\b([^>]*)>\s*([\s\S]*?)\s*<\/subagent>\s*$/;
+const attr = (attrs, name) => attrs.match(new RegExp(`${name}="([^"]*)"`))?.[1];
+
+/**
+ * Describe a message a subagent received: who it is from and its text.
+ * Results from its own subagents arrive as <subagent …>…</subagent> markup;
+ * anything else was sent by its parent.
+ */
+export function describeIncoming(text, parentLabel = "parent") {
+  const clean = text.replace(SUBAGENT_PREAMBLE, "").trim();
+  const m = clean.match(SUBAGENT_RESULT);
+  if (m) {
+    const from = attr(m[1], "description") ?? "subagent";
+    const state = attr(m[1], "state");
+    return { from: state ? `${from} (${state})` : from, text: m[2] };
+  }
+  return { from: parentLabel, text: clean };
+}
+
 const tail = (s, n) => (s.length > n ? `…${s.slice(-n)}` : s);
 const head = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -24,11 +43,12 @@ export function summarizeTool(name, input) {
 /**
  * @param {object} opts
  * @param {(id: string, card: object) => void} opts.write persist one card
+ * @param {(id: string) => string} [opts.parentLabel] who a subagent's parent is (e.g. "orchestrator")
  * @param {() => number} [opts.now]
  * @param {number} [opts.throttleMs] coalesce streaming updates
  * @param {{ setTimeout: Function, clearTimeout: Function }} [opts.timers]
  */
-export function createCardStore({ write, now = Date.now, throttleMs = 200, timers = globalThis }) {
+export function createCardStore({ write, parentLabel = () => "parent", now = Date.now, throttleMs = 200, timers = globalThis }) {
   const cards = new Map();
   const pending = new Map();
   const toolNames = new Map(); // tool call id -> tool name
@@ -97,7 +117,8 @@ export function createCardStore({ write, now = Date.now, throttleMs = 200, timer
         case "session.inbox.enqueued": {
           const text = data.item?.payload?.text;
           if (typeof text === "string" && text.trim()) {
-            c.incoming = head(text.replace(SUBAGENT_PREAMBLE, "").trim(), MAX_INCOMING);
+            const msg = describeIncoming(text, parentLabel(id));
+            c.incoming = head(`${msg.from}: ${msg.text.replace(/\s+/g, " ")}`, MAX_INCOMING);
             return touch(id, true);
           }
           return;

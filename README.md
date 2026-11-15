@@ -10,8 +10,8 @@ subagent, so you can watch it work next to the main agent.
   and `Navigator: implementation` stack in one column while `Research: word splitting` gets its own.
   A description without a colon gets a column of its own.
 - **Cards:** each pane shows a compact card instead of the full transcript: title, status and
-  elapsed time, the latest message the subagent received (e.g. `← Driver says: …`, which makes
-  relayed pairing visible), the current tool, and the tail of its latest output.
+  elapsed time, the latest message the subagent received and who sent it (`← orchestrator: …`,
+  `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
   **Click the card or press Enter** to expand it: herdr zooms the pane to the full tab and the full
   opencode view of that subagent opens. Quit it (ctrl+c) to return to the card and the layout.
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
@@ -49,6 +49,32 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 | `HERDR_SUBAGENTS_SETTLE_MS` | `3000` | How long the workflow must stay quiet before countdowns start |
 | `HERDR_SUBAGENTS_MAX_PANES` | `4` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
 | `HERDR_SUBAGENTS_DEBUG` | unset | Path of a file to append debug logs to |
+
+## Recipe: a navigator that directs its own driver
+
+To have the orchestrator talk only to a navigator, and the navigator and driver talk directly,
+let the navigator spawn the driver as its own subagent. By default opencode 2.3 allows one level
+of subagents, and the built-in `general` agent can't spawn subagents. Enable both in a
+project-level `opencode.json`:
+
+```json
+{
+  "experimental": { "subagent_depth": 2 },
+  "agents": {
+    "navigator": {
+      "mode": "subagent",
+      "description": "Pair-programming navigator. Plans and reviews, and directs its own driver subagent. Never edits files.",
+      "permission": { "subagent": "allow", "edit": "deny" }
+    }
+  }
+}
+```
+
+Then ask the orchestrator to launch one `navigator` subagent (`Navigator: implementation`) and have
+it launch `Driver: implementation` itself. The driver's results go to the navigator, not the
+orchestrator. Both stack in the implementation column, and each card shows who its latest message
+came from (`← Navigator: implementation: …`, `← Driver: implementation (completed): …`).
+`subagent_depth` is an experimental opencode setting.
 
 ## How it works
 

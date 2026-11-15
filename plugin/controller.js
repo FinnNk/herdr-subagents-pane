@@ -412,6 +412,16 @@ export function createController({
       }
     },
 
+    /** Parent session of `id` (from events, falling back to the lookup). */
+    parentOf(id) {
+      return parentOf(id);
+    },
+
+    /** Title of a tracked subagent, if known. */
+    titleOf(id) {
+      return children.get(id)?.title;
+    },
+
     /** Is this session one of the subagents this controller tracks? */
     isTracked(id) {
       return children.has(id);

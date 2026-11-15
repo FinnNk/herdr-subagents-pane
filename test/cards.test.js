@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createCardStore, summarizeTool } from "../plugin/cards.js";
+import { createCardStore, describeIncoming, summarizeTool } from "../plugin/cards.js";
 import { formatElapsed, renderCard, wrap } from "../plugin/card.js";
 import { cardCommand } from "../plugin/tui.js";
 
@@ -28,7 +28,7 @@ describe("card store", () => {
       sessionID: "A",
       item: { payload: { text: "You are a subagent spawned by another session.\nDriver says: tests added" } },
     });
-    expect(last().incoming).toBe("Driver says: tests added");
+    expect(last().incoming).toBe("parent: Driver says: tests added");
   });
 
   test("streams assistant text and settles on the final text", () => {
@@ -62,6 +62,25 @@ describe("card store", () => {
     expect(writes.length).toBe(1);
     s.status("A", { status: "working" });
     expect(writes.length).toBe(2);
+  });
+});
+
+describe("describeIncoming", () => {
+  test("attributes messages from the parent", () => {
+    expect(describeIncoming("You are a subagent spawned by another session.\nPlan the work", "orchestrator"))
+      .toEqual({ from: "orchestrator", text: "Plan the work" });
+  });
+
+  test("attributes results from the subagent's own subagents", () => {
+    const text = '<subagent sessionID="ses_d" state="completed" description="Driver: implementation">\nImplemented words().\n</subagent>';
+    expect(describeIncoming(text, "orchestrator")).toEqual({ from: "Driver: implementation (completed)", text: "Implemented words()." });
+  });
+
+  test("the store prefixes the sender using parentLabel", () => {
+    const writes = [];
+    const s = createCardStore({ write: (id, c) => writes.push(c), parentLabel: () => "Navigator: implementation", throttleMs: 0 });
+    s.handle("session.inbox.enqueued", { sessionID: "D", item: { payload: { text: "Add a test for --top 0" } } });
+    expect(writes.at(-1).incoming).toBe("Navigator: implementation: Add a test for --top 0");
   });
 });
 

@@ -75,7 +75,14 @@ function setup(api) {
   const cardDir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "herdr-subagents-pane", String(process.pid));
   fs.mkdirSync(cardDir, { recursive: true, mode: 0o700 });
   const stateFile = (id) => path.join(cardDir, `${id}.json`);
+  // Declared before the card store needs it; assigned once the controller exists.
+  let controller;
   const cards = createCardStore({
+    parentLabel(id) {
+      const parent = controller?.parentOf(id);
+      if (!parent || parent === controller.root) return "orchestrator";
+      return controller.titleOf(parent) ?? "parent";
+    },
     write(id, card) {
       try {
         const tmp = `${stateFile(id)}.tmp`;
@@ -95,7 +102,7 @@ function setup(api) {
       cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server }),
   });
 
-  const controller = createController({
+  controller = createController({
     panes: herdrPanes,
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
