@@ -6,7 +6,9 @@
 // the same file run as a script renders that JSON in the summary pane:
 //   BUN_BE_BUN=1 opencode summary.js --state <file> [--owner <TUI pid>]
 import fs from "node:fs";
+import path from "node:path";
 import { watchOwner } from "./watchdog.js";
+import { writeCommand } from "./control.js";
 
 /** Runs kept per agent for the timeline (oldest dropped first). */
 const MAX_RUNS = 200;
@@ -199,6 +201,8 @@ const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const GREY = `${ESC}90m`;
 const YELLOW = `${ESC}33m`;
+const REVERSE = `${ESC}7m`;
+const strip = (t) => t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 
 export function formatTokens(n) {
   if (!n) return "0";
@@ -266,8 +270,13 @@ export function timelineBar(runs, t0, t1, width, now) {
   return out;
 }
 
-/** Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane. */
-export function renderSummary(snap, { cols, rows, now = Date.now() }) {
+export const STRIP_HINT = "↑↓ select · ⏎ expand · o open pane";
+
+/**
+ * Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane.
+ * `selected` is the session id highlighted for the strip's keyboard controls.
+ */
+export function renderSummary(snap, { cols, rows, now = Date.now(), selected }) {
   if (!snap?.root) return [`${DIM} waiting for the orchestrator…${RESET}`];
   const tree = treeRows(snap);
   const active = (s) => s.activeMs + (s.running && s.runStart != null ? now - s.runStart : 0);
@@ -333,37 +342,78 @@ export function renderSummary(snap, { cols, rows, now = Date.now() }) {
     // Colour the indicator, status and active timeline slots; keep the tree lines plain.
     const iconAt = 1 + prefix.length;
     let styled = text.slice(0, iconAt) + color + icon + RESET + text.slice(iconAt + 1).replace(status, `${color}${status}${RESET}`);
+    if (s.id === selected) styled = `${REVERSE}${strip(styled)}${RESET}`; // plain reverse video for the selected row
     if (bar) styled = styled.slice(0, styled.length - bar.length) + bar.replace(/█+/g, (m) => `${GREEN}${m}${RESET}`);
     out.push(styled);
   }
   if (tree.length > 1) {
-    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`, "", formatCost(totalCost), "").trimEnd()}${RESET}`);
+    const hint = timelineW >= STRIP_HINT.length ? STRIP_HINT : "";
+    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`, "", formatCost(totalCost), hint).trimEnd()}${RESET}`);
   }
   return out.slice(0, rows);
 }
 
 // ----- interactive process ---------------------------------------------------
 
+/** Rows the strip's selection moves over: subagents, top to bottom (not the orchestrator). */
+export function selectable(snap) {
+  if (!snap?.root) return [];
+  return treeRows(snap).map((r) => r.session.id).filter((id) => id !== snap.root);
+}
+
+/** Next selection for a key, or undefined to leave it. */
+export function moveSelection(ids, current, key) {
+  if (!ids.length) return undefined;
+  const i = ids.indexOf(current);
+  if (key === "down") return i < 0 ? ids[0] : ids[Math.min(ids.length - 1, i + 1)];
+  if (key === "up") return i < 0 ? ids.at(-1) : ids[Math.max(0, i - 1)];
+  return undefined;
+}
+
 function main() {
   const i = process.argv.indexOf("--state");
   const file = i >= 0 ? process.argv[i + 1] : undefined;
   const o = process.argv.indexOf("--owner");
   if (o >= 0) watchOwner(process.argv[o + 1]);
-  const { stdout } = process;
+  const { stdout, stdin } = process;
   let last = "";
-  const draw = (force = false) => {
-    let snap;
+  let snap;
+  let selected;
+  const read = () => {
     try {
       snap = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {}
-    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10 }).join("\r\n");
+  };
+  const draw = (force = false) => {
+    read();
+    if (selected && !selectable(snap).includes(selected)) selected = undefined;
+    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected }).join("\r\n");
     if (!force && frame === last) return;
     last = frame;
     stdout.write(`${ESC}H${ESC}2J${frame}`);
   };
+  // Commands go to the plugin through its runtime dir (the state file's dir).
+  const send = (cmd) => {
+    if (!selected || !file) return;
+    try {
+      writeCommand(path.dirname(file), { cmd, session: selected });
+    } catch {}
+  };
+  if (stdin.isTTY) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on("data", (buf) => {
+    const k = buf.toString("utf8");
+    const key = k === "\x1b[A" || k === "k" ? "up" : k === "\x1b[B" || k === "j" ? "down" : k === "\r" || k === "\n" ? "enter" : k === "o" ? "open" : k === "\x1b" ? "clear" : undefined;
+    if (key === "up" || key === "down") selected = moveSelection(selectable(snap), selected, key) ?? selected;
+    else if (key === "clear") selected = undefined;
+    else if (key === "enter") send("expand");
+    else if (key === "open") send("open");
+    // ctrl+c is ignored: the plugin owns this pane and closes it when done.
+    draw(true);
+  });
   stdout.write(`${ESC}?25l`);
   process.on("exit", () => stdout.write(`${ESC}?25h`));
-  process.on("SIGINT", () => process.exit(0));
+  process.on("SIGINT", () => {});
   stdout.on("resize", () => draw(true));
   draw(true);
   setInterval(draw, 500); // state updates + ticking active time

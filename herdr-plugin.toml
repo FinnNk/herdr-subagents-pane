@@ -1,0 +1,24 @@
+# herdr side of herdr-subagents-pane: actions you can bind to keys. They send
+# commands to the opencode plugin running in the focused tab (see plugin/ctl.js).
+# The opencode plugin itself is installed through opencode's cli.json.
+
+id = "herdr-subagents-pane"
+name = "herdr-subagents-pane"
+version = "0.1.0"
+description = "Actions for herdr-subagents-pane: pause/resume subagent panes, focus the agents strip."
+min_herdr_version = "0.8.0"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "subagents-toggle-panes"
+title = "Toggle subagent panes"
+description = "Pause subagent panes (close them and stop opening new ones) or resume them, for the opencode TUI in this tab."
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/ctl.sh", "toggle"]
+
+[[actions]]
+id = "subagents-focus-strip"
+title = "Focus agents strip"
+description = "Move focus to the agents strip, where ↑/↓ select an agent and Enter expands it."
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/ctl.sh", "focus-strip"]
