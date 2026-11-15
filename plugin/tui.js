@@ -10,10 +10,14 @@ import { fileURLToPath } from "node:url";
 import { createController, DEFAULT_CLOSE_DELAY_MS, DEFAULT_MAX_PANES, DEFAULT_SETTLE_MS } from "./controller.js";
 import { createCardStore } from "./cards.js";
 import { createHerdrPanes, shellQuote } from "./herdr.js";
+import { createSummaryStore } from "./summary.js";
 
 const VIEWER_ENV = "HERDR_SUBAGENTS_PANE_VIEWER";
 const ROUTE_POLL_MS = 500;
 const CARD_SCRIPT = fileURLToPath(new URL("./card.js", import.meta.url));
+const SUMMARY_SCRIPT = fileURLToPath(new URL("./summary.js", import.meta.url));
+/** Share of its height the orchestrator pane keeps when the summary strip opens below it. */
+const STRIP_RATIO = 0.84;
 
 function intFromEnv(name, fallback) {
   const n = Number.parseInt(process.env[name] ?? "", 10);
@@ -60,6 +64,18 @@ export function cardCommand({ bin, cardScript, stateFile, childId, server }) {
   ].join(" ");
 }
 
+/** Shell command that runs the summary strip. */
+export function summaryCommand({ bin, summaryScript, stateFile }) {
+  const q = shellQuote;
+  return ["exec env BUN_BE_BUN=1", q(bin), q(summaryScript), "--state", q(stateFile)].join(" ");
+}
+
+function writeJson(file, value) {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value));
+  fs.renameSync(tmp, file);
+}
+
 function setup(api) {
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID || !process.env.HERDR_SOCKET_PATH) return;
   // Viewer panes run this same plugin; they must not open panes of their own.
@@ -102,8 +118,51 @@ function setup(api) {
       cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server }),
   });
 
+  // Summary strip: a full-width pane along the bottom with the agent tree. It is
+  // split off the orchestrator's pane before the first column so it spans the
+  // whole width, and closed together with the last viewer.
+  const stripEnabled = process.env.HERDR_SUBAGENTS_SUMMARY !== "0";
+  const summaryFile = path.join(cardDir, "summary.json");
+  let stripPane;
+  const viewerPanes = new Set();
+  const panes = {
+    async open(childId, anchor, label) {
+      if (stripEnabled && !stripPane) {
+        try {
+          stripPane = await herdrPanes.openStrip({
+            ratio: STRIP_RATIO,
+            label: "agents",
+            command: summaryCommand({ bin, summaryScript: SUMMARY_SCRIPT, stateFile: summaryFile }),
+          });
+          log("opened summary strip", { pane: stripPane });
+        } catch (err) {
+          log("summary strip failed", { err: String(err) });
+        }
+      }
+      const paneId = await herdrPanes.open(childId, anchor, label);
+      viewerPanes.add(paneId);
+      return paneId;
+    },
+    async exists(paneId) {
+      const ok = await herdrPanes.exists(paneId);
+      if (!ok) viewerPanes.delete(paneId);
+      return ok;
+    },
+    rename: herdrPanes.rename,
+    async close(paneId) {
+      await herdrPanes.close(paneId);
+      viewerPanes.delete(paneId);
+      if (viewerPanes.size === 0 && stripPane) {
+        const strip = stripPane;
+        stripPane = undefined;
+        await herdrPanes.close(strip);
+        log("closed summary strip", { pane: strip });
+      }
+    },
+  };
+
   controller = createController({
-    panes: herdrPanes,
+    panes,
     lookupParent: (id) => api.data.session.get(id)?.parentID,
     lookupRunning: (id) => api.data.session.status(id) === "running",
     onStatus: (id, info) => cards.status(id, info),
@@ -111,6 +170,19 @@ function setup(api) {
     maxPanes: intFromEnv("HERDR_SUBAGENTS_MAX_PANES", DEFAULT_MAX_PANES),
     settleMs: intFromEnv("HERDR_SUBAGENTS_SETTLE_MS", DEFAULT_SETTLE_MS),
     log,
+  });
+
+  const summary = createSummaryStore({
+    write(snapshot) {
+      try {
+        writeJson(summaryFile, snapshot);
+      } catch (err) {
+        log("summary write failed", { err: String(err) });
+      }
+    },
+    inTree: (id) => id === controller.root || controller.isTracked(id),
+    parentOf: (id) => controller.parentOf(id),
+    root: () => controller.root,
   });
 
   function syncRoute() {
@@ -124,6 +196,8 @@ function setup(api) {
     controller.handle(details.type, details.data);
     const id = details.data?.sessionID;
     if (id && controller.isTracked(id)) cards.handle(details.type, details.data);
+    summary.handle(details.type, details.data);
+    if (controller.root) summary.title(controller.root, api.data.session.get(controller.root)?.title);
   });
   syncRoute();
   const poll = setInterval(syncRoute, ROUTE_POLL_MS);
@@ -135,6 +209,7 @@ function setup(api) {
     unsubscribe();
     controller.dispose().finally(() => {
       cards.dispose();
+      summary.dispose();
       fs.rmSync(cardDir, { recursive: true, force: true });
     });
   };

@@ -46,6 +46,17 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {} })
       await herdr(["pane", "run", paneId, viewerCommand(childId)]);
       return paneId;
     },
+    /** Split the parent pane downward for the summary strip; the parent keeps `ratio` of its height. */
+    async openStrip({ ratio, label, command }) {
+      const args = ["pane", "split", parentPaneId, "--direction", "down", "--ratio", String(ratio), "--cwd", cwd, "--no-focus"];
+      for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
+      const res = await herdr(args);
+      const paneId = res?.result?.pane?.pane_id;
+      if (!paneId) throw new Error("herdr pane split returned no pane id");
+      await herdr(["pane", "rename", paneId, label]).catch(() => {});
+      await herdr(["pane", "run", paneId, command]);
+      return paneId;
+    },
     async exists(paneId) {
       try {
         await herdr(["pane", "get", paneId]);

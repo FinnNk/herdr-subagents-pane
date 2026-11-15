@@ -14,6 +14,11 @@ subagent, so you can watch it work next to the main agent.
   `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
   **Click the card or press Enter** to expand it: herdr zooms the pane to the full tab and the full
   opencode view of that subagent opens. Quit it (ctrl+c) to return to the card and the layout.
+- **Summary strip:** a full-width strip along the bottom of the tab shows the agent tree, with an
+  indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
+  active time (ticking while it works), and tokens in / out (in includes cached prompt tokens, out
+  includes reasoning), plus a total. It opens with the first subagent and closes with the last
+  viewer. Set `HERDR_SUBAGENTS_SUMMARY=0` to turn it off.
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
   `· working (round 2)` when the parent resumes it, `· waiting`, `· needs input`, or
   `· done, closing in 20s`.
@@ -48,6 +53,7 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 | `HERDR_SUBAGENTS_CLOSE_DELAY_MS` | `20000` | Debounce before closing an idle subagent's pane |
 | `HERDR_SUBAGENTS_SETTLE_MS` | `3000` | How long the workflow must stay quiet before countdowns start |
 | `HERDR_SUBAGENTS_MAX_PANES` | `4` | Maximum viewer panes open at once (the oldest idle one is closed to make room) |
+| `HERDR_SUBAGENTS_SUMMARY` | `1` | Set to `0` to hide the summary strip |
 | `HERDR_SUBAGENTS_DEBUG` | unset | Path of a file to append debug logs to |
 
 ## Recipe: a navigator that directs its own driver
@@ -83,6 +89,7 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/cards.js`: builds each card's state from events (pure; writes JSON to `$XDG_RUNTIME_DIR`).
 - `plugin/card.js`: the card renderer that runs in each pane (via opencode's embedded Bun), with
   click/Enter to expand into the full view using `herdr pane zoom`.
+- `plugin/summary.js`: the summary store (fed by events in the parent TUI) and the strip renderer.
 - `plugin/herdr.js`: a thin adapter over the `herdr` CLI (`pane split/run/rename/get/close`).
 
 Viewer panes are started with `HERDR_SUBAGENTS_PANE_VIEWER=1` so the plugin does not run inside them.
