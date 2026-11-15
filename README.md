@@ -8,7 +8,9 @@ subagent, so you can watch it work next to the main agent.
   each task gets a column to the right. Name subagents `<Role>: <Task>` (the orchestrator chooses
   the description) and subagents with the same task share a column, e.g. `Driver: implementation`
   and `Navigator: implementation` stack in one column while `Research: word splitting` gets its own.
-  A description without a colon gets a column of its own.
+  A description without a colon gets a column of its own. Columns are always full height: if every
+  column is already stacked, the plugin briefly closes and reopens the cards below the top one so it
+  can split the new column off at full height (a column with an expanded view is left alone).
 - **Cards:** each pane shows a compact card instead of the full transcript: title, status and
   elapsed time, the latest message the subagent received and who sent it (`← orchestrator: …`,
   `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
