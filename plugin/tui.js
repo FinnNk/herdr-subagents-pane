@@ -20,6 +20,7 @@ const ROUTE_POLL_MS = 500;
 const COMMAND_POLL_MS = 300;
 const CARD_SCRIPT = fileURLToPath(new URL("./card.js", import.meta.url));
 const SUMMARY_SCRIPT = fileURLToPath(new URL("./summary.js", import.meta.url));
+const GRAPH_SCRIPT = fileURLToPath(new URL("./graph.js", import.meta.url));
 /** Share of its height the orchestrator pane keeps when the summary strip opens below it. */
 const STRIP_RATIO = 0.84;
 
@@ -63,7 +64,7 @@ export function cardCommand({ bin, cardScript, stateFile, childId, server, owner
   ].join(" ");
 }
 
-/** Shell command that runs the summary strip. */
+/** Shell command that runs the summary strip (or, with graph.js as the script, the agent graph). */
 export function summaryCommand({ bin, summaryScript, stateFile, owner }) {
   const q = shellQuote;
   const ownerArgs = owner ? ["--owner", String(owner)] : [];
@@ -279,6 +280,12 @@ function setup(api) {
     } else if (cmd === "focus-strip") {
       if (stripPane) await herdrPanes.focusNeighbour(process.env.HERDR_PANE_ID, "down");
       else toast("There is no agents strip open right now.");
+    } else if (cmd === "graph") {
+      graphTab = await herdrPanes.openTab(graphTab, {
+        label: "agent graph",
+        command: summaryCommand({ bin, summaryScript: GRAPH_SCRIPT, stateFile: summaryFile, owner: process.pid }),
+      });
+      log("agent graph tab", { tab: graphTab });
     } else if (cmd === "open" || cmd === "expand") {
       if (!controller.isTracked(session)) return;
       const paneId = await controller.forceOpen(session);
@@ -286,6 +293,7 @@ function setup(api) {
       if (cmd === "expand") await herdrPanes.zoom(paneId);
     }
   }
+  let graphTab; // the agent graph's tab, once opened
   let commandBusy = false;
   const commandPoll = setInterval(async () => {
     if (commandBusy) return;
@@ -318,6 +326,7 @@ function setup(api) {
   return () => {
     clearInterval(poll);
     clearInterval(commandPoll);
+    herdrPanes.closeTab(graphTab);
     unsubscribe();
     controller.dispose().finally(() => {
       cards.dispose();

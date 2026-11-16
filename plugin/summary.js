@@ -18,6 +18,7 @@ const MAX_RUNS = 200;
 const MAX_TOOLS = 200;
 const MAX_STEPS = 400;
 const MAX_PROMPT = 400;
+const MAX_MESSAGES = 100;
 
 const pushCapped = (list, item, max) => {
   list.push(item);
@@ -45,6 +46,7 @@ const STOP_EVENTS = new Set([
  */
 export function createSummaryStore({ write, inTree, parentOf, root, titleOf = () => undefined, now = Date.now, throttleMs = 250, timers = globalThis }) {
   let sessions = new Map(); // id -> stats
+  let messages = []; // { t, from, to, kind: "task" | "result" }, for the graph's animations
   let currentRoot;
   let pending;
   let seq = 0;
@@ -67,6 +69,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
     return {
       root: r,
       at: now(),
+      messages,
       sessions: [...sessions.values()].map((s) => ({
         id: s.id,
         parentID: s.id === r ? null : parentOf(s.id) ?? null,
@@ -121,6 +124,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
     if (r === currentRoot) return;
     currentRoot = r;
     sessions = new Map();
+    messages = [];
     seq = 0;
     if (r) stats(r);
   }
@@ -165,11 +169,20 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
       }
       if (type === "session.inbox.enqueued") {
         const text = data.item?.payload?.text;
-        if (!s.prompt && typeof text === "string" && text.trim()) {
-          s.prompt = describeIncoming(text).text.replace(/\s+/g, " ").slice(0, MAX_PROMPT);
-          return touch();
+        if (typeof text !== "string" || !text.trim()) return;
+        const msg = describeIncoming(text);
+        // A result from one of its subagents (<subagent description=…>), or a task from its parent.
+        const isResult = /^<subagent\b/.test(text.replace(/^You are a subagent spawned by another session\.\s*/, "").trim());
+        if (isResult) {
+          const title = msg.from.replace(/ \([^)]*\)$/, ""); // "Driver: impl (completed)" -> "Driver: impl"
+          const child = [...sessions.values()].find((x) => x.id !== id && x.title === title && parentOf(x.id) === id);
+          if (child) pushCapped(messages, { t: now(), from: child.id, to: id, kind: "result" }, MAX_MESSAGES);
+        } else {
+          if (!s.prompt) s.prompt = msg.text.replace(/\s+/g, " ").slice(0, MAX_PROMPT);
+          const from = id === currentRoot ? undefined : parentOf(id);
+          if (from) pushCapped(messages, { t: now(), from, to: id, kind: "task" }, MAX_MESSAGES);
         }
-        return;
+        return touch(true);
       }
       if (type === "session.tool.input.started") {
         const entry = { id: data.id, name: data.name ?? "tool", summary: data.name ?? "tool", start: now(), end: null, ok: null };
@@ -410,7 +423,7 @@ export function detailLines(s, { width, rows, now, parentTitle }) {
   return lines.slice(0, rows);
 }
 
-export const STRIP_HINT = "↑↓ select · ⏎ expand · o open · f follow · ←→ replay";
+export const STRIP_HINT = "↑↓ select · ⏎ expand · o open · f follow · ←→ replay · g graph";
 
 /**
  * Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane.
@@ -538,11 +551,16 @@ export function moveSelection(ids, current, key) {
   return undefined;
 }
 
-function main() {
-  const i = process.argv.indexOf("--state");
-  const file = i >= 0 ? process.argv[i + 1] : undefined;
-  const o = process.argv.indexOf("--owner");
-  if (o >= 0) watchOwner(process.argv[o + 1]);
+/**
+ * The interactive loop shared by the strip and the graph tab: reads the
+ * summary state file, keeps selection / follow / replay state, handles keys,
+ * and sends commands to the plugin through its runtime dir.
+ * @param {object} opts
+ * @param {string} opts.file summary state file
+ * @param {(snap: object, view: {cols: number, rows: number, selected?: string, cursor?: number, follow: boolean}) => string[]} opts.render
+ * @param {Record<string, string>} [opts.extraKeys] raw key -> command name sent without a selection (e.g. "g": "graph")
+ */
+export function runInteractive({ file, render, extraKeys = {}, intervalMs = 500 }) {
   const { stdout, stdin } = process;
   let last = "";
   let snap;
@@ -554,7 +572,7 @@ function main() {
       snap = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {}
   };
-  // Replay steps move the cursor one timeline slot (about 1/60 of the run).
+  // Replay steps move the cursor about 1/60 of the run.
   const span = () => {
     const runs = (snap?.sessions ?? []).flatMap((s) => s.runs ?? []);
     if (!runs.length) return undefined;
@@ -576,16 +594,16 @@ function main() {
     const view = cursor != null ? snapshotAt(snap, cursor) : snap;
     if (follow) selected = mostRecentlyActive(view) ?? selected;
     if (selected && !selectable(view).includes(selected)) selected = undefined;
-    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected, cursor, follow }).join("\r\n");
+    const frame = render(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected, cursor, follow }).join("\r\n");
     if (!force && frame === last) return;
     last = frame;
     stdout.write(`${ESC}H${ESC}2J${frame}`);
   };
-  // Commands go to the plugin through its runtime dir (the state file's dir).
-  const send = (cmd) => {
-    if (!selected || !file) return;
+  const dir = file ? path.dirname(file) : undefined;
+  const send = (cmd, withSelection = true) => {
+    if (!dir || (withSelection && !selected)) return;
     try {
-      writeCommand(path.dirname(file), { cmd, session: selected });
+      writeCommand(dir, withSelection ? { cmd, session: selected } : { cmd });
     } catch {}
   };
   const KEYS = {
@@ -595,7 +613,9 @@ function main() {
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   stdin.on("data", (buf) => {
-    const key = KEYS[buf.toString("utf8")];
+    const raw = buf.toString("utf8");
+    if (extraKeys[raw]) return send(extraKeys[raw], false);
+    const key = KEYS[raw];
     const view = cursor != null ? snapshotAt(snap, cursor) : snap;
     if (key === "up" || key === "down") {
       follow = false; // moving the selection by hand ends follow mode
@@ -618,7 +638,15 @@ function main() {
   process.on("SIGINT", () => {});
   stdout.on("resize", () => draw(true));
   draw(true);
-  setInterval(draw, 500); // state updates + ticking active time
+  setInterval(draw, intervalMs); // state updates, ticking active time, animations
+}
+
+function main() {
+  const i = process.argv.indexOf("--state");
+  const file = i >= 0 ? process.argv[i + 1] : undefined;
+  const o = process.argv.indexOf("--owner");
+  if (o >= 0) watchOwner(process.argv[o + 1]);
+  runInteractive({ file, render: renderSummary, extraKeys: { g: "graph" } });
 }
 
 if (import.meta.main) main();

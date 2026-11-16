@@ -85,6 +85,27 @@ describe("summary store: titles and seeding", () => {
   });
 });
 
+describe("messages between agents", () => {
+  test("tasks from a parent and results back from a subagent are recorded", () => {
+    const { store, ev, tick } = setup();
+    ev("session.created", { sessionID: NAV, parentID: ROOT, title: "Navigator: impl" });
+    ev("session.created", { sessionID: DRV, parentID: NAV, title: "Driver: impl" });
+    ev("session.inbox.enqueued", { sessionID: NAV, item: { payload: { text: "Plan and review the implementation." } } });
+    tick(1_000);
+    ev("session.inbox.enqueued", { sessionID: DRV, item: { payload: { text: "You are a subagent spawned by another session.\nWrite it." } } });
+    tick(1_000);
+    ev("session.inbox.enqueued", { sessionID: NAV, item: { payload: { text: '<subagent description="Driver: impl" state="completed">Done.</subagent>' } } });
+    ev("session.inbox.enqueued", { sessionID: ROOT, item: { payload: { text: "The user's own prompt" } } }); // nobody sent it in the tree
+    expect(store.snapshot().messages).toEqual([
+      { t: 0, from: ROOT, to: NAV, kind: "task" },
+      { t: 1000, from: NAV, to: DRV, kind: "task" },
+      { t: 2000, from: DRV, to: NAV, kind: "result" },
+    ]);
+    // The first task is still the subagent's prompt; results don't replace it.
+    expect(store.snapshot().sessions.find((x) => x.id === NAV).prompt).toBe("Plan and review the implementation.");
+  });
+});
+
 describe("history: tools, steps, waits, prompt", () => {
   function run() {
     const { store, ev, tick } = setup();
@@ -219,10 +240,11 @@ describe("renderSummary", () => {
     expect(moveSelection(ids, undefined, "up")).toBe(DRV);
     expect(moveSelection(ids, DRV, "down")).toBe(DRV);
     expect(moveSelection(ids, NAV, "up")).toBe(RES);
-    const lines = renderSummary(snap, { cols: 120, rows: 10, now: 0, selected: NAV });
+    const lines = renderSummary(snap, { cols: 170, rows: 10, now: 0, selected: NAV });
     expect(lines[3].startsWith("\x1b[7m")).toBe(true);
     expect(lines[2].startsWith("\x1b[7m")).toBe(false);
     expect(strip(lines.at(-1))).toContain(STRIP_HINT);
+    expect(strip(renderSummary(snap, { cols: 170, rows: 10, now: 0 }).at(-1))).toContain(STRIP_HINT);
   });
 
   test("timelineBar marks active slots, idle after the first run, blank before", () => {
