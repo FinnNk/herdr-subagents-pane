@@ -9,9 +9,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { watchOwner } from "./watchdog.js";
 import { writeCommand } from "./control.js";
+import { describeIncoming, summarizeTool, toolChips } from "./cards.js";
 
-/** Runs kept per agent for the timeline (oldest dropped first). */
+export { toolChips };
+
+/** History kept per agent for the timeline, detail view and replay (oldest dropped first). */
 const MAX_RUNS = 200;
+const MAX_TOOLS = 200;
+const MAX_STEPS = 400;
+const MAX_PROMPT = 400;
+
+const pushCapped = (list, item, max) => {
+  list.push(item);
+  if (list.length > max) list.shift();
+};
 
 const STOP_EVENTS = new Set([
   "session.execution.succeeded",
@@ -41,7 +52,11 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
   function stats(id) {
     let s = sessions.get(id);
     if (!s) {
-      s = { id, title: null, order: seq++, running: false, runStart: null, activeMs: 0, blockers: new Set(), tokensIn: 0, tokensOut: 0, model: null, cost: 0, runs: [] };
+      s = {
+        id, title: null, order: seq++, seenAt: now(), running: false, runStart: null, activeMs: 0,
+        blockers: new Set(), blockStart: null, blocks: [], tokensIn: 0, tokensOut: 0, steps: [],
+        model: null, cost: 0, runs: [], tools: [], toolCount: 0, prompt: null,
+      };
       sessions.set(id, s);
     }
     return s;
@@ -66,6 +81,12 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
         model: s.model,
         cost: s.cost,
         runs: s.runs.map((r) => [r.start, r.end]),
+        seenAt: s.seenAt,
+        blocks: [...s.blocks, ...(s.blockStart != null ? [[s.blockStart, null]] : [])],
+        steps: s.steps,
+        tools: s.tools,
+        toolCount: s.toolCount,
+        prompt: s.prompt,
       })),
     };
   }
@@ -81,6 +102,17 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
       flush();
     } else if (pending === undefined) {
       pending = timers.setTimeout(flush, throttleMs);
+    }
+  }
+
+  // Tool calls: the name arrives with input.started, the input with called.
+  const toolCalls = new Map(); // tool call id -> entry in some session's tools
+
+  function blockersChanged(s, before) {
+    if (before === 0 && s.blockers.size > 0) s.blockStart = now();
+    else if (before > 0 && s.blockers.size === 0 && s.blockStart != null) {
+      pushCapped(s.blocks, [s.blockStart, now()], MAX_RUNS);
+      s.blockStart = null;
     }
   }
 
@@ -117,21 +149,56 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
         if (s.running) s.activeMs += now() - s.runStart;
         const open = s.runs.at(-1);
         if (open && open.end === null) open.end = now();
+        for (const t of s.tools) if (t.end == null) t.end = now(); // a run's end settles its calls
         s.running = false;
         s.runStart = null;
         return touch(true);
       }
       if (type === "session.step.ended" && data.tokens) {
         const t = data.tokens;
-        s.tokensIn += (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
-        s.tokensOut += (t.output ?? 0) + (t.reasoning ?? 0);
+        const tin = (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+        const tout = (t.output ?? 0) + (t.reasoning ?? 0);
+        s.tokensIn += tin;
+        s.tokensOut += tout;
+        pushCapped(s.steps, [now(), tin, tout], MAX_STEPS);
         return touch();
       }
+      if (type === "session.inbox.enqueued") {
+        const text = data.item?.payload?.text;
+        if (!s.prompt && typeof text === "string" && text.trim()) {
+          s.prompt = describeIncoming(text).text.replace(/\s+/g, " ").slice(0, MAX_PROMPT);
+          return touch();
+        }
+        return;
+      }
+      if (type === "session.tool.input.started") {
+        const entry = { id: data.id, name: data.name ?? "tool", summary: data.name ?? "tool", start: now(), end: null, ok: null };
+        toolCalls.set(data.id, entry);
+        pushCapped(s.tools, entry, MAX_TOOLS);
+        s.toolCount += 1;
+        return touch();
+      }
+      if (type === "session.tool.called") {
+        const entry = toolCalls.get(data.id);
+        if (entry) entry.summary = summarizeTool(entry.name, data.input);
+        return touch();
+      }
+      if (type === "session.tool.success" || type === "session.tool.failed" || type === "session.tool.error") {
+        const entry = toolCalls.get(data.id);
+        if (entry && entry.end == null) {
+          entry.end = now();
+          entry.ok = type === "session.tool.success";
+        }
+        toolCalls.delete(data.id);
+        return touch();
+      }
+      const before = s.blockers.size;
       if (type === "permission.asked") s.blockers.add(`p:${data.id}`);
       else if (type === "permission.replied") s.blockers.delete(`p:${data.requestID}`);
       else if (type === "form.created") s.blockers.add(`f:${data.form?.id}`);
       else if (type === "form.replied" || type === "form.cancelled") s.blockers.delete(`f:${data.id}`);
       else return;
+      blockersChanged(s, before);
       touch(true);
     },
 
@@ -252,6 +319,58 @@ export function formatCost(c) {
   return c < 0.01 ? "<$0.01" : `$${c.toFixed(2)}`;
 }
 
+const overlap = (a, b, from, to) => Math.max(0, Math.min(b, to) - Math.max(a, from));
+
+/**
+ * The snapshot as it stood at time `t` (for replay): agents not yet seen are
+ * left out, and running/blocked, active time, tokens and tool calls are
+ * recomputed from the recorded history.
+ */
+export function snapshotAt(snap, t) {
+  if (!snap?.root || t == null) return snap;
+  const sessions = snap.sessions
+    .filter((s) => s.id === snap.root || (s.seenAt ?? 0) <= t)
+    .map((s) => {
+      const runs = (s.runs ?? []).filter(([a]) => a <= t).map(([a, b]) => [a, b != null && b <= t ? b : null]);
+      const open = runs.find(([, b]) => b == null);
+      const steps = s.steps ?? [];
+      const sum = (i, upTo) => steps.filter((x) => x[0] <= upTo).reduce((n, x) => n + x[i], 0);
+      // Tokens recorded before the history (seeded, or dropped from the cap) count from the start.
+      const baseIn = (s.tokensIn ?? 0) - sum(1, Infinity);
+      const baseOut = (s.tokensOut ?? 0) - sum(2, Infinity);
+      const tools = (s.tools ?? []).filter((x) => x.start <= t).map((x) => (x.end != null && x.end > t ? { ...x, end: null, ok: null } : x));
+      return {
+        ...s,
+        runs,
+        running: !!open,
+        runStart: open ? open[0] : null,
+        activeMs: runs.reduce((n, [a, b]) => n + (b != null ? b - a : 0), 0),
+        blocked: (s.blocks ?? []).some(([a, b]) => a <= t && (b == null || b > t)),
+        tokensIn: baseIn + sum(1, t),
+        tokensOut: baseOut + sum(2, t),
+        tools,
+        toolCount: Math.max(0, (s.toolCount ?? 0) - (s.tools?.length ?? 0)) + tools.length,
+      };
+    });
+  return { ...snap, at: t, sessions };
+}
+
+/** The subagent that most recently did something (for the strip's follow mode). */
+export function mostRecentlyActive(snap) {
+  let best, bestAt = -Infinity;
+  for (const s of snap?.sessions ?? []) {
+    if (s.id === snap.root) continue;
+    const times = [
+      ...(s.runs ?? []).flatMap(([a, b]) => [a, b ?? Infinity]),
+      ...(s.tools ?? []).map((x) => x.end ?? x.start),
+      ...(s.steps ?? []).map((x) => x[0]),
+    ];
+    const at = Math.max(-Infinity, ...times.filter((x) => x != null));
+    if (at > bestAt) [best, bestAt] = [s.id, at];
+  }
+  return best;
+}
+
 /**
  * One timeline row: `width` slots spanning [t0, t1]; a slot is active ("█") if
  * any run overlaps it, idle ("·") once the agent has started, blank before.
@@ -270,16 +389,41 @@ export function timelineBar(runs, t0, t1, width, now) {
   return out;
 }
 
-export const STRIP_HINT = "↑↓ select · ⏎ expand · o open pane";
+/** Lines for the detail view of one agent, at most `rows` lines of `width`. */
+export function detailLines(s, { width, rows, now, parentTitle }) {
+  const fit = (t) => (t.length > width ? `${t.slice(0, Math.max(0, width - 1))}…` : t);
+  const lines = [];
+  const facts = [s.model, parentTitle && `from ${parentTitle}`].filter(Boolean).join(" · ");
+  if (facts) lines.push(fit(facts));
+  if (s.prompt) lines.push(fit(`prompt: ${s.prompt}`));
+  const chips = toolChips(s.tools);
+  lines.push(fit(chips ? `tools: ${chips}` : "tools: none yet"));
+  const calls = s.tools ?? [];
+  const room = Math.max(0, rows - lines.length);
+  for (const c of calls.slice(-room)) {
+    const mark = c.end == null ? "⚒" : c.ok === false ? "✗" : "✓";
+    const took = formatDuration((c.end ?? now) - c.start);
+    const label = `${mark} ${c.summary ?? c.name}`;
+    const gap = Math.max(1, width - label.length - took.length);
+    lines.push(label.length + 1 + took.length > width ? fit(`${label} ${took}`) : `${label}${" ".repeat(gap)}${took}`);
+  }
+  return lines.slice(0, rows);
+}
+
+export const STRIP_HINT = "↑↓ select · ⏎ expand · o open · f follow · ←→ replay";
 
 /**
  * Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane.
- * `selected` is the session id highlighted for the strip's keyboard controls.
+ * `selected`: session highlighted for the keyboard controls (and shown in the
+ * detail view); `cursor`: replay time, or undefined for live; `follow`: the
+ * selection tracks the most recently active agent (shown in the header).
  */
-export function renderSummary(snap, { cols, rows, now = Date.now(), selected }) {
-  if (!snap?.root) return [`${DIM} waiting for the orchestrator…${RESET}`];
+export function renderSummary(full, { cols, rows, now = Date.now(), selected, cursor, follow = false }) {
+  if (!full?.root) return [`${DIM} waiting for the orchestrator…${RESET}`];
+  const snap = cursor != null ? snapshotAt(full, cursor) : full;
+  const at = cursor ?? now;
   const tree = treeRows(snap);
-  const active = (s) => s.activeMs + (s.running && s.runStart != null ? now - s.runStart : 0);
+  const active = (s) => s.activeMs + (s.running && s.runStart != null ? at - s.runStart : 0);
   const name = (s) => (s.id === snap.root ? `orchestrator${s.title ? ` · ${s.title}` : ""}` : s.title ?? `subagent ${s.id.slice(-6)}`);
 
   // An agent that isn't running but has a running descendant is waiting on it.
@@ -292,39 +436,49 @@ export function renderSummary(snap, { cols, rows, now = Date.now(), selected }) 
   }
   const busyBelow = (id) => (kids.get(id) ?? []).some((k) => k.running || k.blocked || busyBelow(k.id));
 
-  // Columns: name, status, active, tokens, then model and cost when there is
-  // anything to show, and a timeline in whatever width is left.
+  // Columns: name, status, active, tokens, tools, then model and cost when there
+  // is anything to show, and a timeline (or the detail view) in what's left.
   const sessions = tree.map((r) => r.session);
-  const STATUS_W = 11, TIME_W = 7, TOK_W = 16, COST_W = 8;
+  const STATUS_W = 11, TIME_W = 7, TOK_W = 16, TOOLS_W = 5, COST_W = 8;
   const models = sessions.map((s) => s.model ?? "");
   let modelW = Math.min(18, Math.max(0, ...models.map((m) => m.length)));
   if (modelW) modelW = Math.max(modelW, 5);
   const costW = sessions.some((s) => s.cost > 0) ? COST_W : 0;
   const natural = Math.max(...tree.map(({ session: s, prefix }) => prefix.length + 2 + name(s).length));
   let nameW = Math.max(16, Math.min(44, natural));
-  const fixed = () => 1 + nameW + 1 + STATUS_W + TIME_W + 2 + TOK_W + (modelW ? 2 + modelW : 0) + (costW ? 2 + costW : 0);
+  const fixed = () => 1 + nameW + 1 + STATUS_W + TIME_W + 2 + TOK_W + 2 + TOOLS_W + (modelW ? 2 + modelW : 0) + (costW ? 2 + costW : 0);
   if (fixed() > cols) modelW = 0; // narrow: drop the model column first
   while (fixed() > cols && nameW > 16) nameW -= 1;
   const rest = cols - fixed() - 2;
-  const timelineW = rest >= 12 ? rest : 0;
+  const sideW = rest >= 12 ? rest : 0;
 
+  // The timeline always spans the whole recorded run, so the replay cursor moves across it.
   const runsOf = (s) => s.runs ?? (s.runStart != null ? [[s.runStart, s.running ? null : s.runStart]] : []);
-  const allRuns = sessions.flatMap(runsOf);
+  const allRuns = full.sessions.flatMap(runsOf);
   const t0 = allRuns.length ? Math.min(...allRuns.map(([a]) => a)) : now;
-  const anyRunning = sessions.some((s) => s.running);
+  const anyRunning = full.sessions.some((s) => s.running);
   const t1 = anyRunning || !allRuns.length ? now : Math.max(...allRuns.map(([, b]) => b ?? now));
+  const cursorSlot = cursor != null && sideW ? Math.min(sideW - 1, Math.max(0, Math.floor(((cursor - t0) / Math.max(1, t1 - t0)) * sideW))) : -1;
 
-  const line = (n, st, t, tok, model, cost, timeline) =>
-    ` ${pad(n, nameW)} ${pad(st, STATUS_W)}${padStart(t, TIME_W)}  ${padStart(tok, TOK_W)}` +
+  // Detail view replaces the timeline while an agent is selected.
+  const picked = selected ? sessions.find((s) => s.id === selected) : undefined;
+  const parentOfPicked = picked && sessions.find((s) => s.id === picked.parentID);
+  const detail = picked && sideW
+    ? detailLines(picked, { width: sideW, rows: Math.max(1, Math.min(rows, tree.length + 2) - 1), now: at, parentTitle: parentOfPicked ? name(parentOfPicked) : undefined })
+    : undefined;
+
+  const line = (n, st, t, tok, tl, model, cost, side) =>
+    ` ${pad(n, nameW)} ${pad(st, STATUS_W)}${padStart(t, TIME_W)}  ${padStart(tok, TOK_W)}  ${padStart(tl, TOOLS_W)}` +
     (modelW ? `  ${pad(model, modelW)}` : "") +
     (costW ? `  ${padStart(cost, costW)}` : "") +
-    (timelineW && timeline ? `  ${timeline}` : "");
+    (sideW && side ? `  ${side}` : "");
 
   const span = formatDuration(t1 - t0);
-  const timelineHead = timelineW ? pad(`timeline${allRuns.length ? ` · ${span}` : ""}`, timelineW) : "";
-  const out = [`${BOLD}${line("agent", "status", "active", "tokens in / out", "model", "cost", timelineHead).trimEnd()}${RESET}`];
-  let totalMs = 0, totalIn = 0, totalOut = 0, totalCost = 0;
-  for (const { session: s, prefix } of tree) {
+  const mode = [cursor != null ? `replay · ${formatDuration(cursor - t0)} of ${span}` : allRuns.length ? `timeline · ${span}` : "timeline", follow ? "follow" : ""].filter(Boolean).join(" · ");
+  const sideHead = sideW ? pad(detail ? `${name(picked)}${cursor != null ? ` · at ${formatDuration(cursor - t0)}` : ""}` : mode, sideW) : "";
+  const out = [`${BOLD}${line("agent", "status", "active", "tokens in / out", "tools", "model", "cost", sideHead).trimEnd()}${RESET}`];
+  let totalMs = 0, totalIn = 0, totalOut = 0, totalCost = 0, totalTools = 0;
+  tree.forEach(({ session: s, prefix }, row) => {
     const [icon, color, status] = s.blocked
       ? ["▲", RED, "needs input"]
       : s.running
@@ -337,23 +491,37 @@ export function renderSummary(snap, { cols, rows, now = Date.now(), selected }) 
     totalIn += s.tokensIn;
     totalOut += s.tokensOut;
     totalCost += s.cost ?? 0;
-    const bar = timelineW ? timelineBar(runsOf(s), t0, t1, timelineW, now) : "";
-    const text = line(`${prefix}${icon} ${name(s)}`, status, formatDuration(ms), `${formatTokens(s.tokensIn)} / ${formatTokens(s.tokensOut)}`, s.model ?? "", formatCost(s.cost), bar);
+    totalTools += s.toolCount ?? 0;
+    let side = "";
+    if (detail) side = detail[row] ?? "";
+    else if (sideW) {
+      const fullRuns = runsOf(full.sessions.find((x) => x.id === s.id) ?? s);
+      side = timelineBar(fullRuns, t0, t1, sideW, now);
+    }
+    const tl = s.toolCount ? `⚒ ${s.toolCount}` : "";
+    let text = line(`${prefix}${icon} ${name(s)}`, status, formatDuration(ms), `${formatTokens(s.tokensIn)} / ${formatTokens(s.tokensOut)}`, tl, s.model ?? "", formatCost(s.cost), side);
+    if (!side) text = text.trimEnd();
     // Colour the indicator, status and active timeline slots; keep the tree lines plain.
     const iconAt = 1 + prefix.length;
     let styled = text.slice(0, iconAt) + color + icon + RESET + text.slice(iconAt + 1).replace(status, `${color}${status}${RESET}`);
+    if (!detail && side) {
+      const barAt = styled.length - side.length;
+      let bar = side.replace(/█+/g, (m) => `${GREEN}${m}${RESET}`);
+      if (cursorSlot >= 0) bar = [...side].map((ch, i) => (i === cursorSlot ? `${REVERSE}${ch === " " ? "│" : ch}${RESET}` : ch === "█" ? `${GREEN}█${RESET}` : ch)).join("");
+      styled = styled.slice(0, barAt) + bar;
+    }
     if (s.id === selected) styled = `${REVERSE}${strip(styled)}${RESET}`; // plain reverse video for the selected row
-    if (bar) styled = styled.slice(0, styled.length - bar.length) + bar.replace(/█+/g, (m) => `${GREEN}${m}${RESET}`);
     out.push(styled);
-  }
+  });
+  // Detail lines that didn't fit beside a tree row continue under the tree.
+  const extra = detail ? detail.slice(tree.length) : [];
   if (tree.length > 1) {
-    const hint = timelineW >= STRIP_HINT.length ? STRIP_HINT : "";
-    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`, "", formatCost(totalCost), hint).trimEnd()}${RESET}`);
+    const hint = !extra.length && sideW >= STRIP_HINT.length ? STRIP_HINT : extra.shift() ?? "";
+    out.push(`${DIM}${line("total", "", formatDuration(totalMs), `${formatTokens(totalIn)} / ${formatTokens(totalOut)}`, totalTools ? `⚒ ${totalTools}` : "", "", formatCost(totalCost), hint).trimEnd()}${RESET}`);
   }
+  for (const e of extra) out.push(line("", "", "", "", "", "", "", e).trimEnd());
   return out.slice(0, rows);
 }
-
-// ----- interactive process ---------------------------------------------------
 
 /** Rows the strip's selection moves over: subagents, top to bottom (not the orchestrator). */
 export function selectable(snap) {
@@ -379,15 +547,36 @@ function main() {
   let last = "";
   let snap;
   let selected;
+  let follow = false;
+  let cursor; // replay time, or undefined for live
   const read = () => {
     try {
       snap = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {}
   };
+  // Replay steps move the cursor one timeline slot (about 1/60 of the run).
+  const span = () => {
+    const runs = (snap?.sessions ?? []).flatMap((s) => s.runs ?? []);
+    if (!runs.length) return undefined;
+    const t0 = Math.min(...runs.map(([a]) => a));
+    const live = (snap.sessions ?? []).some((s) => s.running);
+    const t1 = live ? Date.now() : Math.max(...runs.map(([, b]) => b ?? Date.now()));
+    return [t0, t1];
+  };
+  const step = (dir) => {
+    const sp = span();
+    if (!sp) return;
+    const [t0, t1] = sp;
+    const delta = Math.max(250, (t1 - t0) / 60);
+    const next = (cursor ?? t1) + dir * delta;
+    cursor = next >= t1 ? undefined : Math.max(t0, next);
+  };
   const draw = (force = false) => {
     read();
-    if (selected && !selectable(snap).includes(selected)) selected = undefined;
-    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected }).join("\r\n");
+    const view = cursor != null ? snapshotAt(snap, cursor) : snap;
+    if (follow) selected = mostRecentlyActive(view) ?? selected;
+    if (selected && !selectable(view).includes(selected)) selected = undefined;
+    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected, cursor, follow }).join("\r\n");
     if (!force && frame === last) return;
     last = frame;
     stdout.write(`${ESC}H${ESC}2J${frame}`);
@@ -399,14 +588,27 @@ function main() {
       writeCommand(path.dirname(file), { cmd, session: selected });
     } catch {}
   };
+  const KEYS = {
+    "\x1b[A": "up", k: "up", "\x1b[B": "down", j: "down", "\r": "enter", "\n": "enter", o: "open", f: "follow",
+    "\x1b[D": "back", "\x1b[C": "forward", "\x1b[H": "start", "\x1b[1~": "start", "\x1b[F": "live", "\x1b[4~": "live", "\x1b": "clear",
+  };
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   stdin.on("data", (buf) => {
-    const k = buf.toString("utf8");
-    const key = k === "\x1b[A" || k === "k" ? "up" : k === "\x1b[B" || k === "j" ? "down" : k === "\r" || k === "\n" ? "enter" : k === "o" ? "open" : k === "\x1b" ? "clear" : undefined;
-    if (key === "up" || key === "down") selected = moveSelection(selectable(snap), selected, key) ?? selected;
-    else if (key === "clear") selected = undefined;
-    else if (key === "enter") send("expand");
+    const key = KEYS[buf.toString("utf8")];
+    const view = cursor != null ? snapshotAt(snap, cursor) : snap;
+    if (key === "up" || key === "down") {
+      follow = false; // moving the selection by hand ends follow mode
+      selected = moveSelection(selectable(view), selected, key) ?? selected;
+    } else if (key === "follow") follow = !follow;
+    else if (key === "back") step(-1);
+    else if (key === "forward") step(1);
+    else if (key === "start") cursor = span()?.[0];
+    else if (key === "live") cursor = undefined;
+    else if (key === "clear") {
+      selected = undefined;
+      follow = false;
+    } else if (key === "enter") send("expand");
     else if (key === "open") send("open");
     // ctrl+c is ignored: the plugin owns this pane and closes it when done.
     draw(true);

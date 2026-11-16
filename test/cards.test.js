@@ -140,3 +140,13 @@ test("cardCommand runs the card script with embedded bun and quotes arguments", 
   const cmd = cardCommand({ bin: "/o/opencode", cardScript: "/p/card.js", stateFile: "/r/x.json", childId: "ses_1", server: "http://h:1" });
   expect(cmd).toBe("exec env BUN_BE_BUN=1 '/o/opencode' '/p/card.js' --state '/r/x.json' --session 'ses_1' --bin '/o/opencode' --server 'http://h:1'");
 });
+
+test("cards count tool calls and show a chips line", () => {
+  const writes = [];
+  const store = createCardStore({ write: (id, c) => writes.push(c), throttleMs: 0 });
+  for (const [i, name] of ["bash", "read", "bash"].entries()) store.handle("session.tool.input.started", { sessionID: "s", id: `t${i}`, name });
+  expect(writes.at(-1)).toMatchObject({ toolCount: 3, chips: "bash ×2 · read" });
+  expect(writes.at(-1).tools).toBeUndefined();
+  const lines = renderCard(writes.at(-1), { cols: 60, rows: 12, now: 0 }).map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  expect(lines.join("\n")).toContain("⚒ 3 · bash ×2 · read");
+});

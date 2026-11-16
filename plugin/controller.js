@@ -242,7 +242,7 @@ export function createController({
       const st = status(c);
       if (panes.report && st !== c.reported) {
         c.reported = st;
-        await panes.report(c.paneId, st, displayTitle(c));
+        await panes.report(c.paneId, st, displayTitle(c), c.id);
       }
     });
   }
