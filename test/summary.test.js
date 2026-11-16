@@ -219,10 +219,11 @@ describe("renderSummary", () => {
     expect(moveSelection(ids, undefined, "up")).toBe(DRV);
     expect(moveSelection(ids, DRV, "down")).toBe(DRV);
     expect(moveSelection(ids, NAV, "up")).toBe(RES);
-    const lines = renderSummary(snap, { cols: 120, rows: 10, now: 0, selected: NAV });
+    const lines = renderSummary(snap, { cols: 170, rows: 10, now: 0, selected: NAV });
     expect(lines[3].startsWith("\x1b[7m")).toBe(true);
     expect(lines[2].startsWith("\x1b[7m")).toBe(false);
     expect(strip(lines.at(-1))).toContain(STRIP_HINT);
+    expect(strip(renderSummary(snap, { cols: 170, rows: 10, now: 0 }).at(-1))).toContain(STRIP_HINT);
   });
 
   test("timelineBar marks active slots, idle after the first run, blank before", () => {

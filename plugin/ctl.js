@@ -1,5 +1,5 @@
 // Send a command to the plugin running in an opencode TUI, e.g. from a herdr
-// plugin action:   node plugin/ctl.js toggle | focus-strip | expand <session> | open <session>
+// plugin action:   node plugin/ctl.js toggle | focus-strip | graph | expand <session> | open <session>
 // The target is picked from HERDR_PANE_ID / HERDR_TAB_ID (set by herdr).
 import { COMMANDS, listInstances, pickInstance, writeCommand } from "./control.js";
 

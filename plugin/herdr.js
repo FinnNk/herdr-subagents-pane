@@ -166,6 +166,30 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
       if (sessionId) args.push("--agent-session-id", sessionId);
       await herdr(args).catch((err) => log("report-agent failed", { err: String(err) }));
     },
+    /**
+     * Show `command` in its own focused tab (the agent graph), or focus that tab
+     * if it is still open. Returns the tab id.
+     */
+    async openTab(existingTab, { label, command }) {
+      if (existingTab) {
+        const ok = await herdr(["tab", "focus", existingTab]).then(() => true, () => false);
+        if (ok) return existingTab;
+      }
+      const workspace = (await herdr(["pane", "get", parentPaneId]).catch(() => undefined))?.result?.pane?.workspace_id;
+      const args = ["tab", "create", "--label", label, "--cwd", cwd, "--focus"];
+      if (workspace) args.push("--workspace", workspace);
+      for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
+      const res = await herdr(args);
+      const tabId = res?.result?.tab?.tab_id;
+      const paneId = res?.result?.root_pane?.pane_id;
+      if (!tabId || !paneId) throw new Error("herdr tab create returned no tab or pane id");
+      await herdr(["pane", "rename", paneId, label]).catch(() => {});
+      await herdr(["pane", "run", paneId, command]);
+      return tabId;
+    },
+    async closeTab(tabId) {
+      if (tabId) await herdr(["tab", "close", tabId]).catch(() => {});
+    },
     /** Tab a pane is in. */
     async tabOf(paneId) {
       return (await herdr(["pane", "get", paneId]).catch(() => undefined))?.result?.pane?.tab_id;

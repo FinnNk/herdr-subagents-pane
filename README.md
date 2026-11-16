@@ -44,6 +44,7 @@ subagent, so you can watch it work next to the main agent.
     time, tokens, tools) and the detail view show the state at that moment, and the timeline marks
     the cursor. `Home` jumps to the start, `End` (or stepping past the end) returns to live.
   - `Esc` clears the selection and follow mode.
+  - `g` opens the **agent graph** in its own tab (see below).
 
   The strip doesn't capture the mouse. It opens as soon as the first subagent appears (even one too
   quick to get a pane) and closes with the panes once the workflow has been quiet for the close
@@ -67,6 +68,12 @@ subagent, so you can watch it work next to the main agent.
 - **Input alerts:** when a subagent starts waiting for a permission reply or an answer, a herdr
   notification pops up (with herdr's "request" sound), whichever tab you're on and whether or
   not the subagent has a pane. Answer it in the main session or in the subagent's expanded view.
+- **Agent graph (preview):** press `g` in the strip (or use the herdr action) to open a tab that
+  draws the orchestrator and its subagents as boxes joined by lines, laid out as a tree: each box
+  shows status, active time, tokens and tool calls; active paths are green, a subagent waiting for
+  input is red. It has the strip's keys (select, `Enter` to expand, follow, replay). Siblings that
+  don't fit the width collapse into a `+N more` box. Pressing `g` again focuses the open tab; the
+  tab closes with the TUI.
 - Repeated titles are numbered (`Research: x`, `Research: x #2`) in labels, cards and the strip.
 - **Picks up a run in progress:** when the TUI starts, or switches to a session that already has
   subagents (e.g. after restarting opencode mid-run), running subagents get their panes at once,
@@ -101,10 +108,11 @@ bind to keys. They act on the opencode TUI in the focused tab:
   resume. The plugin keeps tracking subagents while paused, so resuming brings back panes for
   the ones still working.
 - **Focus agents strip**: move focus to the strip, ready for its keyboard controls.
+- **Open agent graph**: open (or focus) the agent graph tab.
 
 Install it with `herdr plugin link /path/to/herdr-subagents-pane` (or `herdr plugin install` from
 GitHub). The actions need `node` on PATH, or `opencode` (whose embedded Bun is used instead).
-Other tools can send the same commands with `node plugin/ctl.js toggle|focus-strip|expand <session>|open <session>`.
+Other tools can send the same commands with `node plugin/ctl.js toggle|focus-strip|graph|expand <session>|open <session>`.
 
 ## Configuration
 
@@ -192,7 +200,9 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/cards.js`: builds each card's state from events (pure; writes JSON to `$XDG_RUNTIME_DIR`).
 - `plugin/card.js`: the card renderer that runs in each pane (via opencode's embedded Bun), with
   zoom/Enter to expand into the full view using `herdr pane zoom`.
-- `plugin/summary.js`: the summary store (fed by events in the parent TUI) and the strip renderer.
+- `plugin/summary.js`: the summary store (fed by events in the parent TUI), the strip renderer,
+  replay (`snapshotAt`) and the keyboard loop shared with the graph.
+- `plugin/graph.js`: the agent graph (tree layout and box-drawing renderer), run in its own tab.
 - `plugin/herdr.js`: a thin adapter over the `herdr` CLI (panes, the overflow tab, resizing).
 - `plugin/layout.js`: works out the resizes that even out column widths and card heights (pure).
 - `plugin/config.js`: settings from the config file and environment (pure).

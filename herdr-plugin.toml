@@ -5,7 +5,7 @@
 id = "herdr-subagents-pane"
 name = "herdr-subagents-pane"
 version = "0.1.0"
-description = "Actions for herdr-subagents-pane: pause/resume subagent panes, focus the agents strip."
+description = "Actions for herdr-subagents-pane: pause/resume subagent panes, focus the agents strip, open the agent graph."
 min_herdr_version = "0.8.0"
 platforms = ["linux", "macos"]
 
@@ -22,3 +22,10 @@ title = "Focus agents strip"
 description = "Move focus to the agents strip, where ↑/↓ select an agent and Enter expands it."
 platforms = ["linux", "macos"]
 command = ["/bin/sh", "scripts/ctl.sh", "focus-strip"]
+
+[[actions]]
+id = "subagents-open-graph"
+title = "Open agent graph"
+description = "Open (or focus) a tab showing the orchestrator and its subagents as a live graph of boxes and lines."
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/ctl.sh", "graph"]

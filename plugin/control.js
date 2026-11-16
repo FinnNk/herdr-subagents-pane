@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const COMMANDS = ["toggle", "focus-strip", "expand", "open"];
+export const COMMANDS = ["toggle", "focus-strip", "expand", "open", "graph"];
 
 export function runtimeRoot(env = process.env) {
   return path.join(env.XDG_RUNTIME_DIR || os.tmpdir(), "herdr-subagents-pane");

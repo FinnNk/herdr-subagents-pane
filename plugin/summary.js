@@ -410,7 +410,7 @@ export function detailLines(s, { width, rows, now, parentTitle }) {
   return lines.slice(0, rows);
 }
 
-export const STRIP_HINT = "↑↓ select · ⏎ expand · o open · f follow · ←→ replay";
+export const STRIP_HINT = "↑↓ select · ⏎ expand · o open · f follow · ←→ replay · g graph";
 
 /**
  * Render the summary to lines (with ANSI styling) for a `cols` x `rows` pane.
@@ -538,11 +538,16 @@ export function moveSelection(ids, current, key) {
   return undefined;
 }
 
-function main() {
-  const i = process.argv.indexOf("--state");
-  const file = i >= 0 ? process.argv[i + 1] : undefined;
-  const o = process.argv.indexOf("--owner");
-  if (o >= 0) watchOwner(process.argv[o + 1]);
+/**
+ * The interactive loop shared by the strip and the graph tab: reads the
+ * summary state file, keeps selection / follow / replay state, handles keys,
+ * and sends commands to the plugin through its runtime dir.
+ * @param {object} opts
+ * @param {string} opts.file summary state file
+ * @param {(snap: object, view: {cols: number, rows: number, selected?: string, cursor?: number, follow: boolean}) => string[]} opts.render
+ * @param {Record<string, string>} [opts.extraKeys] raw key -> command name sent without a selection (e.g. "g": "graph")
+ */
+export function runInteractive({ file, render, extraKeys = {} }) {
   const { stdout, stdin } = process;
   let last = "";
   let snap;
@@ -554,7 +559,7 @@ function main() {
       snap = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {}
   };
-  // Replay steps move the cursor one timeline slot (about 1/60 of the run).
+  // Replay steps move the cursor about 1/60 of the run.
   const span = () => {
     const runs = (snap?.sessions ?? []).flatMap((s) => s.runs ?? []);
     if (!runs.length) return undefined;
@@ -576,16 +581,16 @@ function main() {
     const view = cursor != null ? snapshotAt(snap, cursor) : snap;
     if (follow) selected = mostRecentlyActive(view) ?? selected;
     if (selected && !selectable(view).includes(selected)) selected = undefined;
-    const frame = renderSummary(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected, cursor, follow }).join("\r\n");
+    const frame = render(snap, { cols: stdout.columns || 100, rows: stdout.rows || 10, selected, cursor, follow }).join("\r\n");
     if (!force && frame === last) return;
     last = frame;
     stdout.write(`${ESC}H${ESC}2J${frame}`);
   };
-  // Commands go to the plugin through its runtime dir (the state file's dir).
-  const send = (cmd) => {
-    if (!selected || !file) return;
+  const dir = file ? path.dirname(file) : undefined;
+  const send = (cmd, withSelection = true) => {
+    if (!dir || (withSelection && !selected)) return;
     try {
-      writeCommand(path.dirname(file), { cmd, session: selected });
+      writeCommand(dir, withSelection ? { cmd, session: selected } : { cmd });
     } catch {}
   };
   const KEYS = {
@@ -595,7 +600,9 @@ function main() {
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   stdin.on("data", (buf) => {
-    const key = KEYS[buf.toString("utf8")];
+    const raw = buf.toString("utf8");
+    if (extraKeys[raw]) return send(extraKeys[raw], false);
+    const key = KEYS[raw];
     const view = cursor != null ? snapshotAt(snap, cursor) : snap;
     if (key === "up" || key === "down") {
       follow = false; // moving the selection by hand ends follow mode
@@ -619,6 +626,14 @@ function main() {
   stdout.on("resize", () => draw(true));
   draw(true);
   setInterval(draw, 500); // state updates + ticking active time
+}
+
+function main() {
+  const i = process.argv.indexOf("--state");
+  const file = i >= 0 ? process.argv[i + 1] : undefined;
+  const o = process.argv.indexOf("--owner");
+  if (o >= 0) watchOwner(process.argv[o + 1]);
+  runInteractive({ file, render: renderSummary, extraKeys: { g: "graph" } });
 }
 
 if (import.meta.main) main();
