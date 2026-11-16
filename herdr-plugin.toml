@@ -1,13 +1,16 @@
 # herdr side of herdr-subagents-pane: actions you can bind to keys. They send
 # commands to the opencode plugin running in the focused tab (see plugin/ctl.js).
 # The opencode plugin itself is installed through opencode's cli.json.
+#
+# herdr needs action ids to be unique across platforms, so the Windows variants
+# carry a "-windows" suffix and run a PowerShell script instead of /bin/sh.
 
 id = "herdr-subagents-pane"
 name = "herdr-subagents-pane"
 version = "0.1.0"
 description = "Actions for herdr-subagents-pane: pause/resume subagent panes, focus the agents strip, open the agent graph."
 min_herdr_version = "0.8.0"
-platforms = ["linux", "macos"]
+platforms = ["linux", "macos", "windows"]
 
 [[actions]]
 id = "subagents-toggle-panes"
@@ -29,3 +32,24 @@ title = "Open agent graph"
 description = "Open (or focus) a tab showing the orchestrator and its subagents as a live graph of boxes and lines."
 platforms = ["linux", "macos"]
 command = ["/bin/sh", "scripts/ctl.sh", "graph"]
+
+[[actions]]
+id = "subagents-toggle-panes-windows"
+title = "Toggle subagent panes"
+description = "Pause subagent panes (close them and stop opening new ones) or resume them, for the opencode TUI in this tab."
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/ctl.ps1", "toggle"]
+
+[[actions]]
+id = "subagents-focus-strip-windows"
+title = "Focus agents strip"
+description = "Move focus to the agents strip, where ↑/↓ select an agent and Enter expands it."
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/ctl.ps1", "focus-strip"]
+
+[[actions]]
+id = "subagents-open-graph-windows"
+title = "Open agent graph"
+description = "Open (or focus) a tab showing the orchestrator and its subagents as a live graph of boxes and lines."
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/ctl.ps1", "graph"]

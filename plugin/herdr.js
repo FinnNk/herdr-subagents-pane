@@ -21,7 +21,6 @@ function herdr(args) {
   });
 }
 
-/** POSIX single-quote a value for a shell command line. */
 /** herdr agent state for a card status. */
 export function herdrState(status) {
   if (/^needs input/.test(status)) return "blocked";
@@ -29,20 +28,18 @@ export function herdrState(status) {
   return "idle"; // waiting, done, closing
 }
 
-export function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
+/** @typedef {{ command: string, cwd?: string, env?: Record<string,string> }} Launch  see launch.js */
 
 /**
  * @param {object} opts
  * @param {string} opts.parentPaneId pane hosting the parent opencode TUI
- * @param {string} opts.cwd working directory for viewer panes
- * @param {(childId: string) => string} opts.viewerCommand shell command that attaches to a child session
- * @param {Record<string,string>} [opts.env] extra env for viewer panes (passed via --env, not argv)
+ * @param {string} opts.cwd working directory for panes whose launch doesn't set one
+ * @param {(childId: string) => Launch} opts.viewerLaunch how a viewer pane shows a child session
+ * @param {Record<string,string>} [opts.env] extra env for all our panes (passed via --env, not argv)
  * @param {string} [opts.overflowLabel] label of the overflow tab
  * @param {(msg: string, extra?: object) => void} [opts.log]
  */
-export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, overflowLabel = "subagents", log = () => {} }) {
+export function createHerdrPanes({ parentPaneId, cwd, viewerLaunch, env = {}, overflowLabel = "subagents", log = () => {} }) {
   // Overflow tab: created (unfocused) for the first overflow viewer, closed with
   // the last one. Closing its panes isn't enough: other plugins (e.g. a sidebar)
   // may have added panes of their own to it.
@@ -50,12 +47,19 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
   const overflowPanes = new Set();
   let reportSeq = 0;
 
+  /** --cwd and --env flags for a new pane running `launch`. */
+  function spawnFlags(launch) {
+    const flags = ["--cwd", launch?.cwd ?? cwd];
+    for (const [k, v] of Object.entries({ ...env, ...launch?.env })) flags.push("--env", `${k}=${v}`);
+    return flags;
+  }
+
   async function openInNewTab(childId, label) {
     // The overflow tab goes in the TUI's workspace, not whichever one is active.
     const workspace = (await herdr(["pane", "get", parentPaneId]).catch(() => undefined))?.result?.pane?.workspace_id;
-    const args = ["tab", "create", "--label", overflowLabel, "--cwd", cwd, "--no-focus"];
+    const launch = viewerLaunch(childId);
+    const args = ["tab", "create", "--label", overflowLabel, "--no-focus", ...spawnFlags(launch)];
     if (workspace) args.push("--workspace", workspace);
-    for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
     const focusedBefore = await focusedTab();
     const res = await herdr(args);
     const tabId = res?.result?.tab?.tab_id;
@@ -64,7 +68,7 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
     overflowTab = tabId;
     if (focusedBefore) keepFocus(tabId, focusedBefore);
     await herdr(["pane", "rename", paneId, label]).catch(() => {});
-    await herdr(["pane", "run", paneId, viewerCommand(childId)]);
+    await herdr(["pane", "run", paneId, launch.command]);
     return paneId;
   }
 
@@ -100,26 +104,25 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
         return paneId;
       }
       const target = anchor.paneId ?? parentPaneId;
-      const args = ["pane", "split", target, "--direction", anchor.direction, "--cwd", cwd, "--no-focus"];
+      const launch = viewerLaunch(childId);
+      const args = ["pane", "split", target, "--direction", anchor.direction, "--no-focus", ...spawnFlags(launch)];
       if (anchor.ratio) args.push("--ratio", String(anchor.ratio));
-      for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
       const res = await herdr(args);
       const paneId = res?.result?.pane?.pane_id;
       if (!paneId) throw new Error("herdr pane split returned no pane id");
       await herdr(["pane", "rename", paneId, label]).catch(() => {});
-      await herdr(["pane", "run", paneId, viewerCommand(childId)]);
+      await herdr(["pane", "run", paneId, launch.command]);
       if (anchor.area === "overflow") overflowPanes.add(paneId);
       return paneId;
     },
     /** Split the parent pane downward for the summary strip; the parent keeps `ratio` of its height. */
-    async openStrip({ ratio, label, command }) {
-      const args = ["pane", "split", parentPaneId, "--direction", "down", "--ratio", String(ratio), "--cwd", cwd, "--no-focus"];
-      for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
+    async openStrip({ ratio, label, launch }) {
+      const args = ["pane", "split", parentPaneId, "--direction", "down", "--ratio", String(ratio), "--no-focus", ...spawnFlags(launch)];
       const res = await herdr(args);
       const paneId = res?.result?.pane?.pane_id;
       if (!paneId) throw new Error("herdr pane split returned no pane id");
       await herdr(["pane", "rename", paneId, label]).catch(() => {});
-      await herdr(["pane", "run", paneId, command]);
+      await herdr(["pane", "run", paneId, launch.command]);
       return paneId;
     },
     async exists(paneId) {
@@ -167,24 +170,23 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
       await herdr(args).catch((err) => log("report-agent failed", { err: String(err) }));
     },
     /**
-     * Show `command` in its own focused tab (the agent graph), or focus that tab
+     * Show `launch` in its own focused tab (the agent graph), or focus that tab
      * if it is still open. Returns the tab id.
      */
-    async openTab(existingTab, { label, command }) {
+    async openTab(existingTab, { label, launch }) {
       if (existingTab) {
         const ok = await herdr(["tab", "focus", existingTab]).then(() => true, () => false);
         if (ok) return existingTab;
       }
       const workspace = (await herdr(["pane", "get", parentPaneId]).catch(() => undefined))?.result?.pane?.workspace_id;
-      const args = ["tab", "create", "--label", label, "--cwd", cwd, "--focus"];
+      const args = ["tab", "create", "--label", label, "--focus", ...spawnFlags(launch)];
       if (workspace) args.push("--workspace", workspace);
-      for (const [k, v] of Object.entries(env)) args.push("--env", `${k}=${v}`);
       const res = await herdr(args);
       const tabId = res?.result?.tab?.tab_id;
       const paneId = res?.result?.root_pane?.pane_id;
       if (!tabId || !paneId) throw new Error("herdr tab create returned no tab or pane id");
       await herdr(["pane", "rename", paneId, label]).catch(() => {});
-      await herdr(["pane", "run", paneId, command]);
+      await herdr(["pane", "run", paneId, launch.command]);
       return tabId;
     },
     async closeTab(tabId) {

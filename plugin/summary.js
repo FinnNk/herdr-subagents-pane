@@ -5,9 +5,11 @@
 // The store runs in the parent TUI (fed with session events) and writes JSON;
 // the same file run as a script renders that JSON in the summary pane:
 //   BUN_BE_BUN=1 opencode summary.js --state <file> [--owner <TUI pid>]
+// (the plugin passes the arguments in the pane environment instead; see launch.js)
 import fs from "node:fs";
 import path from "node:path";
 import { watchOwner } from "./watchdog.js";
+import { launchArgs } from "./launch.js";
 import { writeCommand } from "./control.js";
 import { describeIncoming, summarizeTool, toolChips } from "./cards.js";
 
@@ -642,10 +644,8 @@ export function runInteractive({ file, render, extraKeys = {}, intervalMs = 500 
 }
 
 function main() {
-  const i = process.argv.indexOf("--state");
-  const file = i >= 0 ? process.argv[i + 1] : undefined;
-  const o = process.argv.indexOf("--owner");
-  if (o >= 0) watchOwner(process.argv[o + 1]);
+  const { state: file, owner } = launchArgs();
+  if (owner) watchOwner(owner);
   runInteractive({ file, render: renderSummary, extraKeys: { g: "graph" } });
 }
 

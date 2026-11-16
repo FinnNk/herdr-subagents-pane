@@ -101,9 +101,15 @@ Add the `plugin` directory to `~/.config/opencode/cli.json`:
 }
 ```
 
+### Platforms
+
+Linux is tested day to day. macOS should behave the same. Windows is supported but less tried:
+the pane launches avoid shell syntax (see "How it works"), so they work in PowerShell and cmd as
+well as sh, bash, zsh, fish and nushell. The test suite runs on all three systems in CI.
+
 ## herdr actions (optional)
 
-The repository is also a herdr plugin with two actions you can run from herdr's action menu or
+The repository is also a herdr plugin with three actions you can run from herdr's action menu or
 bind to keys. They act on the opencode TUI in the focused tab:
 
 - **Toggle subagent panes**: pause (close all subagent panes and the strip, and open none) or
@@ -114,7 +120,8 @@ bind to keys. They act on the opencode TUI in the focused tab:
 
 Install it with `herdr plugin link /path/to/herdr-subagents-pane` (or `herdr plugin install` from
 GitHub). The actions need `node` on PATH, or `opencode` (whose embedded Bun is used instead).
-Other tools can send the same commands with `node plugin/ctl.js toggle|focus-strip|graph|expand <session>|open <session>`.
+On Windows the actions run `scripts/ctl.ps1` with Windows PowerShell; on Linux and macOS,
+`scripts/ctl.sh`. Other tools can send the same commands with `node plugin/ctl.js toggle|focus-strip|graph|expand <session>|open <session>`.
 
 ## Configuration
 
@@ -212,6 +219,12 @@ came from (`← Navigator: implementation: …`, `← Driver: implementation (co
 - `plugin/control.js`, `plugin/ctl.js`: the control channel (a commands folder in the runtime dir)
   used by the strip's keys and the herdr actions in `herdr-plugin.toml`.
 
+`herdr pane run` types a command into the new pane's shell, so the plugin keeps that command
+free of anything a shell would parse: the pane starts in the `plugin` directory with the opencode
+binary's directory first on its `PATH`, the arguments travel in the `HERDR_SUBAGENTS_PANE_ARGS`
+environment variable, and the typed text is just `opencode card.js` (`exec opencode card.js`
+outside Windows). See `plugin/launch.js`.
+
 Viewer panes are started with `HERDR_SUBAGENTS_PANE_VIEWER=1` so the plugin does not run inside them.
 If the parent TUI uses `--server <url>`, the viewer uses the same URL, and `OPENCODE_SERVER_PASSWORD`
 is passed through `herdr pane split --env`, not on the command line.
@@ -219,5 +232,5 @@ is passed through `herdr pane split --env`, not on the command line.
 ## Development
 
 ```sh
-BUN_BE_BUN=1 opencode test
+BUN_BE_BUN=1 opencode test   # or: bun test
 ```

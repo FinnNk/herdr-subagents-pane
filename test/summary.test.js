@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createSummaryStore, detailLines, formatCost, formatDuration, formatTokens, mostRecentlyActive, moveSelection, renderSummary, selectable, snapshotAt, STRIP_HINT, timelineBar, toolChips, treeRows } from "../plugin/summary.js";
-import { summaryCommand } from "../plugin/tui.js";
+import { summaryLaunch } from "../plugin/tui.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 const ROOT = "ses_root";
@@ -283,11 +283,8 @@ describe("renderSummary", () => {
   });
 });
 
-test("summaryCommand passes the owner pid for the watchdog", () => {
-  expect(summaryCommand({ bin: "/o/opencode", summaryScript: "/p/summary.js", stateFile: "/r/s.json", owner: 42 })).toEndWith(" --owner 42");
-});
-
-test("summaryCommand runs the summary script with embedded bun", () => {
-  expect(summaryCommand({ bin: "/o/opencode", summaryScript: "/p/summary.js", stateFile: "/r/s.json" }))
-    .toBe("exec env BUN_BE_BUN=1 '/o/opencode' '/p/summary.js' --state '/r/s.json'");
+test("summaryLaunch passes the state file and owner pid in the pane environment", () => {
+  const l = summaryLaunch({ bin: "/o/opencode", summaryScript: "/p/summary.js", stateFile: "/r/s.json", owner: 42, platform: "linux" });
+  expect(l.command).toBe("exec opencode summary.js");
+  expect(JSON.parse(l.env.HERDR_SUBAGENTS_PANE_ARGS)).toEqual({ state: "/r/s.json", owner: "42" });
 });

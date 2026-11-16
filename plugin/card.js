@@ -6,10 +6,12 @@
 // marker file next to the state file tells the plugin not to close the pane.
 //
 // Run by the plugin as: BUN_BE_BUN=1 opencode card.js --state <file> --session <id>
+// (the plugin passes the arguments in the pane environment instead; see launch.js)
 //                       [--server <url>] [--bin <opencode binary>] [--owner <TUI pid>]
 import { spawn, execFile } from "node:child_process";
 import fs from "node:fs";
 import { watchOwner } from "./watchdog.js";
+import { ARGS_ENV, launchArgs } from "./launch.js";
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
@@ -109,12 +111,6 @@ export function renderCard(state, { cols, rows, now = Date.now() }) {
 
 // ----- interactive process -------------------------------------------------
 
-function parseArgs(argv) {
-  const args = {};
-  for (let i = 0; i < argv.length; i += 2) args[argv[i].replace(/^--/, "")] = argv[i + 1];
-  return args;
-}
-
 function readState(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -143,7 +139,7 @@ async function zoomedSelf(pane) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = launchArgs();
   const { stdin, stdout } = process;
   const pane = process.env.HERDR_PANE_ID;
   let expanded = false;
@@ -183,10 +179,12 @@ async function main() {
     if (pane && !alreadyZoomed) await herdr(["pane", "zoom", pane, "--on"]);
     const env = { ...process.env, HERDR_SUBAGENTS_PANE_VIEWER: "1" };
     delete env.BUN_BE_BUN; // otherwise the opencode binary would act as bun
+    delete env[ARGS_ENV];
     const cmd = [...(args.server ? ["--server", args.server] : []), "--session", args.session];
     let unzoomedByUser = false;
     await new Promise((resolve) => {
-      child = spawn(args.bin || "opencode", cmd, { stdio: "inherit", env });
+      // In the TUI's directory (the card itself runs in the plugin's).
+      child = spawn(args.bin || "opencode", cmd, { stdio: "inherit", env, cwd: args.cwd || undefined });
       child.on("exit", resolve);
       child.on("error", resolve);
       // Un-zooming the pane (ctrl+b z) collapses back to the card.
@@ -238,7 +236,7 @@ async function main() {
     if (!expanded) process.exit(0);
   });
   process.on("SIGTERM", () => process.exit(0));
-  process.on("SIGHUP", () => process.exit(0));
+  if (process.platform !== "win32") process.on("SIGHUP", () => process.exit(0)); // no SIGHUP on Windows
 
   watchOwner(args.owner, { onGone: () => child?.kill("SIGTERM") });
   enterCardMode();
