@@ -5,7 +5,9 @@
 //
 // Run by the plugin in its own tab as:
 //   BUN_BE_BUN=1 opencode graph.js --state <summary.json> [--owner <TUI pid>]
+// (the plugin passes the arguments in the pane environment instead; see launch.js)
 import { watchOwner } from "./watchdog.js";
+import { launchArgs } from "./launch.js";
 import { formatDuration, formatTokens, runInteractive, snapshotAt, treeRows } from "./summary.js";
 
 const ESC = "\x1b[";
@@ -287,10 +289,8 @@ export function renderGraph(full, { cols, rows, now = Date.now(), selected, curs
 }
 
 function main() {
-  const i = process.argv.indexOf("--state");
-  const file = i >= 0 ? process.argv[i + 1] : undefined;
-  const o = process.argv.indexOf("--owner");
-  if (o >= 0) watchOwner(process.argv[o + 1]);
+  const { state: file, owner } = launchArgs();
+  if (owner) watchOwner(owner);
   runInteractive({ file, render: renderGraph, intervalMs: 100 }); // fast enough for message animations
 }
 

@@ -1,19 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { configPaths, loadConfig, makeExclude } from "../plugin/config.js";
+import path from "node:path";
+import { configPaths as realConfigPaths, loadConfig, makeExclude } from "../plugin/config.js";
 
 const HOME = "/home/u";
 const GLOBAL = "/home/u/.config/opencode/herdr-subagents-pane.json";
 
+// The config code builds paths with node:path, so on Windows they come out as
+// \home\u\...; the tests are written with POSIX paths and compare after this.
+const posix = (s) => (path.sep === "/" ? s : s.split(path.sep).join("/"));
+const configPaths = (...args) => realConfigPaths(...args).map(posix);
+
 /** loadConfig with an in-memory file system. */
 function load(files = {}, env = {}) {
-  return loadConfig({
+  const r = loadConfig({
     env,
     home: HOME,
     readFile: (p) => {
-      if (p in files) return files[p];
+      if (posix(p) in files) return files[posix(p)];
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     },
   });
+  return { ...r, source: r.source && posix(r.source), warnings: r.warnings.map(posix) };
 }
 
 describe("configPaths", () => {

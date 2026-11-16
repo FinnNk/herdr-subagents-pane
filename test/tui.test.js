@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { serverFromArgv } from "../plugin/tui.js";
-import { shellQuote } from "../plugin/herdr.js";
 
 test("serverFromArgv reads --server in both forms and stops at --", () => {
   expect(serverFromArgv(["--server", "http://127.0.0.1:4199"])).toBe("http://127.0.0.1:4199");
@@ -9,6 +8,3 @@ test("serverFromArgv reads --server in both forms and stops at --", () => {
   expect(serverFromArgv(["--", "--server", "nope"])).toBeUndefined();
 });
 
-test("shellQuote survives single quotes", () => {
-  expect(shellQuote("a'b")).toBe(`'a'\\''b'`);
-});

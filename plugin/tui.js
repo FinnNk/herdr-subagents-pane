@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { createController } from "./controller.js";
 import { loadConfig, makeExclude } from "./config.js";
 import { createCardStore } from "./cards.js";
-import { createHerdrPanes, shellQuote } from "./herdr.js";
+import { createHerdrPanes } from "./herdr.js";
+import { paneLaunch } from "./launch.js";
 import { createSummaryStore } from "./summary.js";
 import { runtimeRoot, sweepStale, takeCommands } from "./control.js";
 
@@ -48,27 +49,20 @@ function makeLogger(file) {
   };
 }
 
-/** Shell command that runs the card for one subagent (falls back to the full view). */
-export function cardCommand({ bin, cardScript, stateFile, childId, server, owner }) {
-  const q = shellQuote;
-  const serverArgs = server ? ["--server", q(server)] : [];
-  return [
-    "exec env BUN_BE_BUN=1",
-    q(bin),
-    q(cardScript),
-    "--state", q(stateFile),
-    "--session", q(childId),
-    "--bin", q(bin),
-    ...serverArgs,
-    ...(owner ? ["--owner", String(owner)] : []),
-  ].join(" ");
+/** How a pane runs the card for one subagent (which falls back to the full view). */
+export function cardLaunch({ bin, cardScript, stateFile, childId, server, owner, cwd, platform }) {
+  return paneLaunch({
+    bin,
+    script: cardScript,
+    // cwd: where the full view runs; the card itself starts in the plugin directory.
+    args: { state: stateFile, session: childId, bin, server, owner, cwd },
+    platform,
+  });
 }
 
-/** Shell command that runs the summary strip (or, with graph.js as the script, the agent graph). */
-export function summaryCommand({ bin, summaryScript, stateFile, owner }) {
-  const q = shellQuote;
-  const ownerArgs = owner ? ["--owner", String(owner)] : [];
-  return ["exec env BUN_BE_BUN=1", q(bin), q(summaryScript), "--state", q(stateFile), ...ownerArgs].join(" ");
+/** How a pane runs the summary strip (or, with graph.js as the script, the agent graph). */
+export function summaryLaunch({ bin, summaryScript, stateFile, owner, platform }) {
+  return paneLaunch({ bin, script: summaryScript, args: { state: stateFile, owner }, platform });
 }
 
 function writeJson(file, value) {
@@ -129,8 +123,8 @@ function setup(api) {
     cwd: process.cwd(),
     env,
     log,
-    viewerCommand: (childId) =>
-      cardCommand({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server, owner: process.pid }),
+    viewerLaunch: (childId) =>
+      cardLaunch({ bin, cardScript: CARD_SCRIPT, stateFile: stateFile(childId), childId, server, owner: process.pid, cwd: process.cwd() }),
   });
 
   // Summary strip: a full-width pane along the bottom with the agent tree. The
@@ -146,7 +140,7 @@ function setup(api) {
           stripPane = await herdrPanes.openStrip({
             ratio: STRIP_RATIO,
             label: "agents",
-            command: summaryCommand({ bin, summaryScript: SUMMARY_SCRIPT, stateFile: summaryFile, owner: process.pid }),
+            launch: summaryLaunch({ bin, summaryScript: SUMMARY_SCRIPT, stateFile: summaryFile, owner: process.pid }),
           });
         },
         async close() {
@@ -283,7 +277,7 @@ function setup(api) {
     } else if (cmd === "graph") {
       graphTab = await herdrPanes.openTab(graphTab, {
         label: "agent graph",
-        command: summaryCommand({ bin, summaryScript: GRAPH_SCRIPT, stateFile: summaryFile, owner: process.pid }),
+        launch: summaryLaunch({ bin, summaryScript: GRAPH_SCRIPT, stateFile: summaryFile, owner: process.pid }),
       });
       log("agent graph tab", { tab: graphTab });
     } else if (cmd === "open" || cmd === "expand") {

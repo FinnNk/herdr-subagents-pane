@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createCardStore, describeIncoming, summarizeTool } from "../plugin/cards.js";
 import { formatElapsed, renderCard, wrap } from "../plugin/card.js";
-import { cardCommand } from "../plugin/tui.js";
+import { cardLaunch } from "../plugin/tui.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 
@@ -136,9 +136,11 @@ describe("renderCard", () => {
   });
 });
 
-test("cardCommand runs the card script with embedded bun and quotes arguments", () => {
-  const cmd = cardCommand({ bin: "/o/opencode", cardScript: "/p/card.js", stateFile: "/r/x.json", childId: "ses_1", server: "http://h:1" });
-  expect(cmd).toBe("exec env BUN_BE_BUN=1 '/o/opencode' '/p/card.js' --state '/r/x.json' --session 'ses_1' --bin '/o/opencode' --server 'http://h:1'");
+test("cardLaunch passes the card's arguments in the pane environment", () => {
+  const l = cardLaunch({ bin: "/o/opencode", cardScript: "/p/card.js", stateFile: "/r/x.json", childId: "ses_1", server: "http://h:1", owner: 7, cwd: "/w", platform: "linux" });
+  expect(l.command).toBe("exec opencode card.js");
+  expect(l.cwd).toBe("/p");
+  expect(JSON.parse(l.env.HERDR_SUBAGENTS_PANE_ARGS)).toEqual({ state: "/r/x.json", session: "ses_1", bin: "/o/opencode", server: "http://h:1", owner: "7", cwd: "/w" });
 });
 
 test("cards count tool calls and show a chips line", () => {
