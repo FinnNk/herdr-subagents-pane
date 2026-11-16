@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildTree, collapse, layoutTree, renderGraph } from "../plugin/graph.js";
+import { buildTree, collapse, edgePath, layoutTree, MESSAGE_MS, messageGlyphs, renderGraph } from "../plugin/graph.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const S = (id, parentID, title, extra = {}) => ({
@@ -79,5 +79,48 @@ describe("renderGraph", () => {
     const lines = renderGraph(snap, { cols: 60, rows: 14, now: 9000, selected: "a", cursor: 4000 });
     expect(lines.some((l) => l.includes("\x1b[7m ○ Research: x") || l.includes("\x1b[7m ● Research: x"))).toBe(true);
     expect(strip(lines[0])).toBe(" agent graph · replay · 4s of 9s");
+  });
+});
+
+describe("message animations", () => {
+  const snap = {
+    root: "r",
+    sessions: [S("r", null, "Build"), S("a", "r", "Research: x"), S("b", "r", "Docs: y")],
+    messages: [{ t: 1000, from: "r", to: "b", kind: "task" }, { t: 1000, from: "a", to: "r", kind: "result" }],
+  };
+  const laid = () => {
+    const tree = buildTree(snap);
+    const { nodes } = layoutTree(tree, { cols: 62 });
+    return { tree, byId: new Map(nodes.map((n) => [n.session.id, n])) };
+  };
+
+  test("edgePath runs from under the parent, along the bus, to above the child", () => {
+    const { byId } = laid();
+    const path = edgePath(byId.get("r"), byId.get("b"), { top: 2, left: 3 });
+    expect(path[0]).toEqual([3 + byId.get("r").cx, 2 + 5]);
+    expect(path.at(-1)).toEqual([3 + byId.get("b").cx, 2 + 7]);
+    expect(path.every(([, y], i) => i === 0 || y >= path[i - 1][1])).toBe(true);
+  });
+
+  test("a task travels down its edge and a result travels up, only while in flight", () => {
+    const { byId } = laid();
+    const offsets = { top: 2, left: 3 };
+    const heads = (at) => messageGlyphs(snap.messages, byId, at, offsets).filter((g) => g.glyph !== "·");
+    const task = (at) => heads(at).find((g) => g.glyph === "●");
+    const result = (at) => heads(at).find((g) => g.glyph === "◆");
+    const down = edgePath(byId.get("r"), byId.get("b"), offsets);
+    const up = edgePath(byId.get("r"), byId.get("a"), offsets).reverse();
+    expect([task(1000).x, task(1000).y]).toEqual(down[0]);
+    expect([task(1000 + MESSAGE_MS - 1).x, task(1000 + MESSAGE_MS - 1).y]).toEqual(down.at(-1));
+    expect([result(1000).x, result(1000).y]).toEqual(up[0]); // starts just above the subagent
+    expect(heads(999)).toEqual([]);
+    expect(heads(1000 + MESSAGE_MS)).toEqual([]);
+  });
+
+  test("renderGraph draws the glyphs over the connectors", () => {
+    const text = renderGraph(snap, { cols: 64, rows: 16, now: 1500 }).map(strip).join("\n");
+    expect(text).toContain("●");
+    expect(text).toContain("◆");
+    expect(renderGraph(snap, { cols: 64, rows: 16, now: 5000 }).map(strip).join("\n")).not.toContain("●");
   });
 });

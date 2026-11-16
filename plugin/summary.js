@@ -18,6 +18,7 @@ const MAX_RUNS = 200;
 const MAX_TOOLS = 200;
 const MAX_STEPS = 400;
 const MAX_PROMPT = 400;
+const MAX_MESSAGES = 100;
 
 const pushCapped = (list, item, max) => {
   list.push(item);
@@ -45,6 +46,7 @@ const STOP_EVENTS = new Set([
  */
 export function createSummaryStore({ write, inTree, parentOf, root, titleOf = () => undefined, now = Date.now, throttleMs = 250, timers = globalThis }) {
   let sessions = new Map(); // id -> stats
+  let messages = []; // { t, from, to, kind: "task" | "result" }, for the graph's animations
   let currentRoot;
   let pending;
   let seq = 0;
@@ -67,6 +69,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
     return {
       root: r,
       at: now(),
+      messages,
       sessions: [...sessions.values()].map((s) => ({
         id: s.id,
         parentID: s.id === r ? null : parentOf(s.id) ?? null,
@@ -121,6 +124,7 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
     if (r === currentRoot) return;
     currentRoot = r;
     sessions = new Map();
+    messages = [];
     seq = 0;
     if (r) stats(r);
   }
@@ -165,11 +169,20 @@ export function createSummaryStore({ write, inTree, parentOf, root, titleOf = ()
       }
       if (type === "session.inbox.enqueued") {
         const text = data.item?.payload?.text;
-        if (!s.prompt && typeof text === "string" && text.trim()) {
-          s.prompt = describeIncoming(text).text.replace(/\s+/g, " ").slice(0, MAX_PROMPT);
-          return touch();
+        if (typeof text !== "string" || !text.trim()) return;
+        const msg = describeIncoming(text);
+        // A result from one of its subagents (<subagent description=…>), or a task from its parent.
+        const isResult = /^<subagent\b/.test(text.replace(/^You are a subagent spawned by another session\.\s*/, "").trim());
+        if (isResult) {
+          const title = msg.from.replace(/ \([^)]*\)$/, ""); // "Driver: impl (completed)" -> "Driver: impl"
+          const child = [...sessions.values()].find((x) => x.id !== id && x.title === title && parentOf(x.id) === id);
+          if (child) pushCapped(messages, { t: now(), from: child.id, to: id, kind: "result" }, MAX_MESSAGES);
+        } else {
+          if (!s.prompt) s.prompt = msg.text.replace(/\s+/g, " ").slice(0, MAX_PROMPT);
+          const from = id === currentRoot ? undefined : parentOf(id);
+          if (from) pushCapped(messages, { t: now(), from, to: id, kind: "task" }, MAX_MESSAGES);
         }
-        return;
+        return touch(true);
       }
       if (type === "session.tool.input.started") {
         const entry = { id: data.id, name: data.name ?? "tool", summary: data.name ?? "tool", start: now(), end: null, ok: null };
@@ -547,7 +560,7 @@ export function moveSelection(ids, current, key) {
  * @param {(snap: object, view: {cols: number, rows: number, selected?: string, cursor?: number, follow: boolean}) => string[]} opts.render
  * @param {Record<string, string>} [opts.extraKeys] raw key -> command name sent without a selection (e.g. "g": "graph")
  */
-export function runInteractive({ file, render, extraKeys = {} }) {
+export function runInteractive({ file, render, extraKeys = {}, intervalMs = 500 }) {
   const { stdout, stdin } = process;
   let last = "";
   let snap;
@@ -625,7 +638,7 @@ export function runInteractive({ file, render, extraKeys = {} }) {
   process.on("SIGINT", () => {});
   stdout.on("resize", () => draw(true));
   draw(true);
-  setInterval(draw, 500); // state updates + ticking active time
+  setInterval(draw, intervalMs); // state updates, ticking active time, animations
 }
 
 function main() {

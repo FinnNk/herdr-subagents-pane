@@ -71,7 +71,9 @@ subagent, so you can watch it work next to the main agent.
 - **Agent graph (preview):** press `g` in the strip (or use the herdr action) to open a tab that
   draws the orchestrator and its subagents as boxes joined by lines, laid out as a tree: each box
   shows status, active time, tokens and tool calls; active paths are green, a subagent waiting for
-  input is red. It has the strip's keys (select, `Enter` to expand, follow, replay). Siblings that
+  input is red. Messages are animated along the edges: a task a parent sends (the initial
+  prompt, or later feedback) travels down as a cyan `●`, a result coming back travels up as a
+  magenta `◆`. It has the strip's keys (select, `Enter` to expand, follow, replay). Siblings that
   don't fit the width collapse into a `+N more` box. Pressing `g` again focuses the open tab; the
   tab closes with the TUI.
 - Repeated titles are numbered (`Research: x`, `Research: x #2`) in labels, cards and the strip.

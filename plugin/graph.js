@@ -17,6 +17,11 @@ const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const YELLOW = `${ESC}33m`;
 const GREY = `${ESC}90m`;
+const CYAN = `${ESC}1;36m`;
+const MAGENTA = `${ESC}1;35m`;
+
+/** How long a message takes to travel along an edge. */
+export const MESSAGE_MS = 1_200;
 
 export const BOX_H = 5; // top border, three lines, bottom border
 export const GAP_H = 3; // connector rows between levels
@@ -93,6 +98,44 @@ export function layoutTree(root, { cols }) {
   };
   place(root, 0);
   return { nodes: placed, width: count * w + (count - 1) * H_GAP, height: (depthMax + 1) * BOX_H + depthMax * GAP_H };
+}
+
+/**
+ * The cells of the connector from a parent's box down to a child's box, in
+ * order from parent to child: down from the parent, along the bus, down to the child.
+ */
+export function edgePath(parent, child, { top, left }) {
+  const yb = top + parent.y + BOX_H - 1;
+  const px = left + parent.cx;
+  const cx = left + child.cx;
+  const cells = [[px, yb + 1], [px, yb + 2]];
+  const dir = Math.sign(cx - px);
+  for (let x = px + dir; dir !== 0 && x !== cx + dir; x += dir) cells.push([x, yb + 2]);
+  cells.push([cx, yb + 3]);
+  return cells;
+}
+
+/**
+ * Glyphs for messages in flight at time `at`: a task travels down its edge, a
+ * result travels up, over MESSAGE_MS. Returns [{ x, y, glyph, style }].
+ */
+export function messageGlyphs(messages, nodesById, at, offsets) {
+  const out = [];
+  for (const m of messages ?? []) {
+    const age = at - m.t;
+    if (age < 0 || age >= MESSAGE_MS) continue;
+    const down = m.kind !== "result";
+    const parent = nodesById.get(down ? m.from : m.to);
+    const child = nodesById.get(down ? m.to : m.from);
+    if (!parent || !child || !parent.children.includes(child)) continue;
+    const path = edgePath(parent, child, offsets);
+    const ordered = down ? path : [...path].reverse();
+    const i = Math.min(ordered.length - 1, Math.floor((age / MESSAGE_MS) * ordered.length));
+    const style = down ? CYAN : MAGENTA;
+    for (let k = 2; k >= 1; k--) if (i - k >= 0) out.push({ x: ordered[i - k][0], y: ordered[i - k][1], glyph: "·", style });
+    out.push({ x: ordered[i][0], y: ordered[i][1], glyph: down ? "●" : "◆", style });
+  }
+  return out;
 }
 
 /** A grid of characters with a style per cell, flattened to ANSI lines. */
@@ -224,6 +267,10 @@ export function renderGraph(full, { cols, rows, now = Date.now(), selected, curs
     c.put(x, y + BOX_H - 1, bottomBorder.join(""), border);
   }
 
+  // Messages in flight, drawn over the connectors.
+  const byId = new Map(nodes.filter((n) => n.session).map((n) => [n.session.id, n]));
+  for (const g of messageGlyphs(full.messages, byId, at, { top, left })) c.put(g.x, g.y, g.glyph, g.style);
+
   const span = (() => {
     const runs = full.sessions.flatMap((s) => s.runs ?? []);
     if (!runs.length) return undefined;
@@ -244,7 +291,7 @@ function main() {
   const file = i >= 0 ? process.argv[i + 1] : undefined;
   const o = process.argv.indexOf("--owner");
   if (o >= 0) watchOwner(process.argv[o + 1]);
-  runInteractive({ file, render: renderGraph });
+  runInteractive({ file, render: renderGraph, intervalMs: 100 }); // fast enough for message animations
 }
 
 if (import.meta.main) main();
