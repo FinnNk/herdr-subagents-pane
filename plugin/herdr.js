@@ -159,9 +159,11 @@ export function createHerdrPanes({ parentPaneId, cwd, viewerCommand, env = {}, o
       await herdr(["pane", "rename", paneId, label]).catch(() => {});
     },
     /** Tell herdr the viewer pane's agent state, so its tab and sidebar indicators show it. */
-    async report(paneId, status, title) {
+    async report(paneId, status, title, sessionId) {
       const args = ["pane", "report-agent", paneId, "--source", "herdr-subagents-pane", "--agent", "opencode"];
       args.push("--state", herdrState(status), "--message", `${title} · ${status}`, "--seq", String(++reportSeq));
+      // The opencode session shown in the pane, so herdr (and tools built on it) know it.
+      if (sessionId) args.push("--agent-session-id", sessionId);
       await herdr(args).catch((err) => log("report-agent failed", { err: String(err) }));
     },
     /** Tab a pane is in. */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSummaryStore, formatCost, formatDuration, formatTokens, moveSelection, renderSummary, selectable, STRIP_HINT, timelineBar, treeRows } from "../plugin/summary.js";
+import { createSummaryStore, detailLines, formatCost, formatDuration, formatTokens, mostRecentlyActive, moveSelection, renderSummary, selectable, snapshotAt, STRIP_HINT, timelineBar, toolChips, treeRows } from "../plugin/summary.js";
 import { summaryCommand } from "../plugin/tui.js";
 
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
@@ -85,6 +85,79 @@ describe("summary store: titles and seeding", () => {
   });
 });
 
+describe("history: tools, steps, waits, prompt", () => {
+  function run() {
+    const { store, ev, tick } = setup();
+    ev("session.created", { sessionID: DRV, parentID: NAV, title: "Driver: impl" });
+    ev("session.created", { sessionID: NAV, parentID: ROOT, title: "Navigator: impl" });
+    ev("session.inbox.enqueued", { sessionID: DRV, item: { payload: { text: "You are a subagent spawned by another session.\nWrite wordfreq.js" } } });
+    ev("session.execution.started", { sessionID: DRV }); // t=0
+    ev("session.tool.input.started", { sessionID: DRV, id: "t1", name: "read" });
+    ev("session.tool.called", { sessionID: DRV, id: "t1", input: { filePath: "/r/sample.txt" } });
+    tick(1_000);
+    ev("session.tool.success", { sessionID: DRV, id: "t1" }); // t=1s
+    ev("session.step.ended", { sessionID: DRV, tokens: { input: 1000, output: 100 } });
+    tick(1_000);
+    ev("session.tool.input.started", { sessionID: DRV, id: "t2", name: "bash" }); // t=2s
+    ev("permission.asked", { sessionID: DRV, id: "p1" });
+    tick(3_000);
+    ev("permission.replied", { sessionID: DRV, requestID: "p1" }); // t=5s
+    ev("session.tool.failed", { sessionID: DRV, id: "t2" });
+    ev("session.step.ended", { sessionID: DRV, tokens: { input: 500, output: 50 } });
+    tick(1_000);
+    ev("session.execution.succeeded", { sessionID: DRV }); // t=6s
+    return { store, tick };
+  }
+
+  test("records tool calls, token steps, input waits and the spawning prompt", () => {
+    const drv = run().store.snapshot().sessions.find((s) => s.id === DRV);
+    expect(drv.prompt).toBe("Write wordfreq.js");
+    expect(drv.toolCount).toBe(2);
+    expect(drv.tools.map((t) => [t.summary, t.start, t.end, t.ok])).toEqual([["read sample.txt", 0, 1000, true], ["bash", 2000, 5000, false]]);
+    expect(drv.steps).toEqual([[1000, 1000, 100], [5000, 500, 50]]);
+    expect(drv.blocks).toEqual([[2000, 5000]]);
+  });
+
+  test("snapshotAt rebuilds the state at a moment of the run", () => {
+    const snap = run().store.snapshot();
+    const at = (t) => snapshotAt(snap, t).sessions.find((s) => s.id === DRV);
+    expect(at(3000)).toMatchObject({ running: true, blocked: true, tokensIn: 1000, tokensOut: 100, toolCount: 2, activeMs: 0 });
+    expect(at(3000).tools[1]).toMatchObject({ name: "bash", end: null, ok: null }); // still in progress at 3s
+    expect(at(500)).toMatchObject({ toolCount: 1, tokensIn: 0, blocked: false });
+    expect(at(10_000)).toMatchObject({ running: false, activeMs: 6000, tokensIn: 1500, toolCount: 2 });
+  });
+
+  test("mostRecentlyActive picks the subagent that last did something", () => {
+    const { store, tick } = run();
+    tick(1_000);
+    store.handle("session.execution.started", { sessionID: NAV });
+    expect(mostRecentlyActive(store.snapshot())).toBe(NAV);
+  });
+
+  test("detail view lines: model and parent, prompt, chips, recent calls with timings", () => {
+    const drv = run().store.snapshot().sessions.find((s) => s.id === DRV);
+    const lines = detailLines({ ...drv, model: "sonnet" }, { width: 40, rows: 6, now: 6000, parentTitle: "Navigator: impl" });
+    expect(lines).toEqual([
+      "sonnet · from Navigator: impl",
+      "prompt: Write wordfreq.js",
+      "tools: bash · read",
+      "✓ read sample.txt                     1s",
+      "✗ bash                                3s",
+    ]);
+    expect(toolChips([{ name: "bash" }, { name: "read" }, { name: "bash" }])).toBe("bash ×2 · read");
+  });
+
+  test("the strip shows the detail view for the selected agent and a replay cursor", () => {
+    const snap = run().store.snapshot();
+    const detail = renderSummary(snap, { cols: 140, rows: 12, now: 6000, selected: DRV }).map(strip);
+    expect(detail[0]).toMatch(/tools  Driver: impl$/);
+    expect(detail.join("\n")).toContain("prompt: Write wordfreq.js");
+    const replay = renderSummary(snap, { cols: 140, rows: 12, now: 6000, cursor: 3000 }).map(strip);
+    expect(replay[0]).toMatch(/replay · 3s of 6s/);
+    expect(replay.find((l) => l.includes("Driver"))).toMatch(/needs input/);
+  });
+});
+
 describe("renderSummary", () => {
   test("draws the tree with indicators, live active time, tokens and a total", () => {
     const { store, ev, tick, now } = setup();
@@ -101,7 +174,7 @@ describe("renderSummary", () => {
     tick(31_000);
     // Narrow enough that there's no room for a timeline.
     const lines = renderSummary(store.snapshot(), { cols: 80, rows: 10, now: now() }).map(strip);
-    expect(lines[0]).toMatch(/agent\s+status\s+active\s+tokens in \/ out$/);
+    expect(lines[0]).toMatch(/agent\s+status\s+active\s+tokens in \/ out  tools$/);
     expect(lines[1]).toMatch(/^ ● orchestrator · Wordfreq feature\s+active\s+49s\s+0 \/ 0$/);
     expect(lines[2]).toMatch(/^ ├─ ○ Research: word splitting\s+idle\s+18s\s+8\.1k \/ 600$/);
     expect(lines[3]).toMatch(/^ └─ ◌ Navigator: implementation\s+waiting\s+0s/); // its driver is active
@@ -110,7 +183,7 @@ describe("renderSummary", () => {
 
     // Wide: a timeline fills the rest. Research ran first, the driver after it.
     const wide = renderSummary(store.snapshot(), { cols: 120, rows: 10, now: now() }).map(strip);
-    expect(wide[0]).toMatch(/tokens in \/ out  timeline · 49s/);
+    expect(wide[0]).toMatch(/tokens in \/ out  tools  timeline · 49s/);
     const bar = (l) => l.match(/[█· ]+$/)[0].trim();
     expect(bar(wide[2])).toMatch(/^█+·+$/); // research: active, then idle
     expect(bar(wide[4])).toMatch(/^█+$/); // driver: active since it started
@@ -122,9 +195,9 @@ describe("renderSummary", () => {
     store.meta(RES, { model: "sonnet" });
     ev("session.created", { sessionID: RES, parentID: ROOT, title: "Research: x" });
     let lines = renderSummary(store.snapshot(), { cols: 90, rows: 10, now: 0 }).map(strip);
-    expect(lines[0]).toMatch(/tokens in \/ out  model/);
+    expect(lines[0]).toMatch(/tokens in \/ out  tools  model/);
     expect(lines[0]).not.toContain("cost");
-    expect(lines[2]).toMatch(/0 \/ 0  sonnet/);
+    expect(lines[2]).toMatch(/0 \/ 0\s+sonnet/);
     store.meta(RES, { cost: 0.4321 });
     lines = renderSummary(store.snapshot(), { cols: 90, rows: 10, now: 0 }).map(strip);
     expect(lines[0]).toMatch(/model\s+cost/);

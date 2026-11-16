@@ -40,6 +40,16 @@ export function summarizeTool(name, input) {
   return value ? `${name ?? "tool"} ${head(value.replace(/\s+/g, " "), 80)}` : name ?? "tool";
 }
 
+/** Tool counts by name, most used first: "bash ×5 · read ×3". */
+export function toolChips(tools, max = 4) {
+  const counts = new Map();
+  for (const t of tools ?? []) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+  const sorted = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = sorted.slice(0, max).map(([n, c]) => (c > 1 ? `${n} ×${c}` : n));
+  if (sorted.length > max) shown.push(`+${sorted.length - max}`);
+  return shown.join(" · ");
+}
+
 /**
  * @param {object} opts
  * @param {(id: string, card: object) => void} opts.write persist one card
@@ -64,6 +74,8 @@ export function createCardStore({ write, parentLabel = () => "parent", now = Dat
         startedAt: null, // start of the current round
         endedAt: null, // end of the current round (null while working)
         tool: null, // { name, summary, done }
+        tools: [], // [{ name }] every call so far, for the chips line
+        chips: "", // e.g. "bash ×5 · read ×3"
         text: "", // latest assistant text (tail)
         incoming: null, // latest message the subagent received, e.g. "Driver says: …"
       };
@@ -75,7 +87,7 @@ export function createCardStore({ write, parentLabel = () => "parent", now = Dat
   function flush(id) {
     pending.delete(id);
     const c = cards.get(id);
-    if (c) write(id, { ...c, updatedAt: now() });
+    if (c) write(id, { ...c, tools: undefined, toolCount: c.tools.length, updatedAt: now() });
   }
 
   function touch(id, immediate = false) {
@@ -135,6 +147,8 @@ export function createCardStore({ write, parentLabel = () => "parent", now = Dat
         case "session.tool.input.started":
           toolNames.set(data.id, data.name);
           c.tool = { name: data.name, summary: data.name, done: false };
+          c.tools.push({ name: data.name ?? "tool" });
+          c.chips = toolChips(c.tools);
           return touch(id);
         case "session.tool.called": {
           const name = toolNames.get(data.id) ?? c.tool?.name;

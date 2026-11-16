@@ -91,6 +91,9 @@ export function renderCard(state, { cols, rows, now = Date.now() }) {
   if (state.tool) {
     body.push([` ${state.tool.done ? "✓" : "⚙"} ${state.tool.summary}`.slice(0, cols), DIM]);
   }
+  if (state.chips) {
+    body.push([` ⚒ ${state.toolCount ?? ""} · ${state.chips}`.slice(0, cols), DIM]);
+  }
   if (state.text) {
     if (body.length) body.push(["", ""]);
     const textLines = wrap(stripMarkdown(state.text), width);

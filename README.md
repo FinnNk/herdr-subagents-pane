@@ -18,7 +18,8 @@ subagent, so you can watch it work next to the main agent.
   nothing is resized while a view is expanded). Other panes in the tab, like a sidebar, keep their size.
 - **Cards:** each pane shows a compact card instead of the full transcript: title, status and
   elapsed time, the latest message the subagent received and who sent it (`← orchestrator: …`,
-  `← Driver: implementation (completed): …`), the current tool, and the tail of its latest output.
+  `← Driver: implementation (completed): …`), the current tool, a tool tally (`⚒ 7 · bash ×4 ·
+  read ×2 · write`), and the tail of its latest output.
   **Zoom is the toggle.** Zoom the pane as usual (herdr's `prefix+z`, default `ctrl+b z`), or
   press Enter in it, to expand it: the pane fills the tab with the full opencode view of that
   subagent. **Press `ctrl+b z` again** (or quit the full view with ctrl+c) to return to the card
@@ -27,15 +28,24 @@ subagent, so you can watch it work next to the main agent.
 - **Summary strip:** a full-width strip along the bottom of the tab shows the agent tree, with an
   indicator per agent (`●` active, `◌` waiting on a subagent, `○` idle, `▲` needs input), its total
   active time (ticking while it works), tokens in / out (in includes cached prompt tokens, out
-  includes reasoning), its model, its cost (a column that appears only when some agent has a
+  includes reasoning), its tool-call count (`⚒ 7`), its model, its cost (a column that appears only when some agent has a
   non-zero cost; subscription and local providers report none), plus a total. The rest of the
   width is a **timeline**: one bar per agent across the run so far, `█` while it was working and
   `·` while idle, so parallel and sequential work is visible at a glance. On a narrow strip the
   timeline goes first, then the model column.
-  **Keyboard:** focus the strip (click it, or the herdr action below), then `↑`/`↓` (or `k`/`j`)
-  select a subagent, `Enter` expands it into its full view, and `o` just opens its pane. This works
-  for any subagent in the tree, including ones whose pane has closed or that never got one; `Esc`
-  clears the selection. The strip doesn't capture the mouse. It opens as soon as the first subagent appears (even one too
+  **Keyboard:** focus the strip (click it, or the herdr action below), then:
+  - `↑`/`↓` (or `k`/`j`) select a subagent. While one is selected, the timeline area shows its
+    **detail view**: model, who spawned it, the prompt it was given, a tool tally, and its recent
+    tool calls with timings (`✓` done, `✗` failed, `⚒` running).
+  - `Enter` expands the selected subagent into its full view; `o` just opens its pane. This works
+    for any subagent in the tree, including ones whose pane has closed or that never got one.
+  - `f` toggles **follow**: the selection jumps to whichever subagent most recently did something.
+  - `←`/`→` **replay**: step a cursor back and forth through the run; every row (status, active
+    time, tokens, tools) and the detail view show the state at that moment, and the timeline marks
+    the cursor. `Home` jumps to the start, `End` (or stepping past the end) returns to live.
+  - `Esc` clears the selection and follow mode.
+
+  The strip doesn't capture the mouse. It opens as soon as the first subagent appears (even one too
   quick to get a pane) and closes with the panes once the workflow has been quiet for the close
   delay. Set `"summary": false` to turn it off (see [Configuration](#configuration)).
 - Each pane's label shows the subagent's title and status: `· starting`, `· working`,
@@ -52,6 +62,8 @@ subagent, so you can watch it work next to the main agent.
 - **Status in herdr:** each viewer pane reports its subagent's state to herdr (`working`,
   `blocked` while it needs input, `idle` otherwise; herdr shows an unseen idle as `done`), so
   herdr's tab and sidebar indicators reflect subagents too, including in tabs you aren't looking at.
+  The report includes the opencode session id the pane shows (`--agent-session-id`), so herdr and
+  tools built on it know which session a pane belongs to.
 - **Input alerts:** when a subagent starts waiting for a permission reply or an answer, a herdr
   notification pops up (with herdr's "request" sound), whichever tab you're on and whether or
   not the subagent has a pane. Answer it in the main session or in the subagent's expanded view.
